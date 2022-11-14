@@ -11,13 +11,18 @@ import chargefw2_python
 import requests
 import subprocess
 import time
+from datetime import date
 from threading import Timer
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+import configparser
 
 
+config = configparser.ConfigParser()
+config.read('api.ini')
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1000 * 1000
+if config['limits']['on'] == 'True':
+    app.config['MAX_CONTENT_LENGTH'] = int(config['limits']['file_size'])
 api = Api(app,
           title='Atomic Charge Calculator II - API',
           description='Atomic Charge Calculator II is software tool '
@@ -25,11 +30,11 @@ api = Api(app,
                       '<br>'
                       '<a href="http://78.128.250.156/documentation">Documentation</a>')
 
-limiter = Limiter(
-    app,
-    key_func=get_remote_address,
-    default_limits=["200 per day", "50 per hour"]
-)
+# limiter = Limiter(
+#     app,
+#     key_func=get_remote_address,
+#     default_limits=["200 per day", "50 per hour"]
+# )
 
 
 @app.route('/documentation')
@@ -106,9 +111,26 @@ def json_error(message: str, status_code=404):
             'message': message}, status_code
 
 
+def collect_statistics(endpoint_name, **kwargs):
+    with open(config['paths']['save_statistics_file'], mode='a') as file:
+        writer = csv.writer(file)
+
+        args = list()
+        for key, value in kwargs.items():
+            connected = str(key) + '=' + str(value)
+            args.append(connected)
+
+        writer.writerow([request.remote_addr,
+                        date.today().strftime("%d/%m/%Y"),
+                        time.strftime("%H:%M:%S", time.localtime())] +
+                        ['endpoint_name=' + endpoint_name] +
+                        args)
+
+
 @avail_methods.route('')
 class AvailableMethods(Resource):
     def get(self):
+        collect_statistics(endpoint_name='available_methods')
         """Returns list of methods available for calculation of partial atomic charges"""
         return json_ok({'available_methods': chargefw2_python.get_available_methods()})
 
@@ -129,6 +151,7 @@ class AvailableParameters(Resource):
         if method not in chargefw2_python.get_available_methods():
             return json_error(f'Method {method} is not available.', status_code=400)
 
+        collect_statistics(endpoint_name='available_parameters', method=method)
         return json_ok({'parameters': chargefw2_python.get_available_parameters(method)})
 
 
@@ -140,36 +163,10 @@ class AvailableParameters(Resource):
 #     )
 
 
-def uploaded_files(dict, user_add):
-    """Count how many times user has sent request"""
-    dict[user_add] = dict.get(user_add, 0) + 1
 
 
-def increase_limit():
-    to_delete = []
-    for user in already_uploaded_count:
-        if already_uploaded_count[user] > 1:
-            already_uploaded_count[user] -= 1
-        else:
-            to_delete.append(user)
-    for user in to_delete:
-        del already_uploaded_count[user]
-
-    # threading.Timer(30, increase_limit).start()
 
 
-class RepeatTimer(Timer):
-    def run(self):
-        while not self.finished.wait(self.interval):
-            self.function(*self.args, **self.kwargs)
-
-
-# remember how many files user has already sent
-manager = Manager()
-already_uploaded_count = manager.dict()
-# increase_limit()
-timer = RepeatTimer(30, increase_limit)
-timer.start()
 
 
 def valid_suffix(files: TextIO) -> bool:
@@ -180,30 +177,20 @@ def valid_suffix(files: TextIO) -> bool:
 
 
 def save_file_identifiers(identifiers: Dict[str, str]) -> None:
-    # # TODO
-    # output_file_path = "/tmp/file_identifiers.json"
-    # with open(output_file_path, mode="w+") as file:
-    #     if os.stat(output_file_path).st_size == 0:
-    #         file_data = []
-    #     else:
-    #         file_data = json.load(file)
+    for identifier, path_to_file in identifiers.items():
+        file_manager[identifier] = path_to_file
+    # while 'file_id' in file_manager or file_manager.get('file_id', 0) >= 1:
+    #     time.sleep(0.01)
+    # file_manager['file_id'] = file_manager.get('file_id', 0) + 1
     #
-    # with open(output_file_path, mode="w") as file:
+    # with open(config['paths']['save_file_identifiers_file'], mode='a') as file:
+    #     writer = csv.writer(file)
     #     for identifier, path_to_file in identifiers.items():
-    #         file_data.append({"identifier": identifier,
-    #                           "path_to_file": path_to_file})
-    #     json.dump(file_data, file, indent=4)
-    hidden_file = '/tmp/.uploading'
-    while os.path.exists(hidden_file):
-        sleep(0.01)
-    open_hidden_file = open(hidden_file, 'w')
-    with open('/tmp/file_identifiers.csv', mode='a') as file:
-        writer = csv.writer(file)
-        for identifier, path_to_file in identifiers.items():
-            writer.writerow([identifier, path_to_file])
-
-    open_hidden_file.close()
-    os.remove(hidden_file)
+    #         writer.writerow([identifier, path_to_file])
+    #
+    # file_manager['file_id'] = file_manager['file_id'] - 1
+    # if file_manager['file_id'] == 0:
+    #     del file_manager['file_id']
 
 
 # TODO not good - just one file (action='append' not working with files)
@@ -216,7 +203,7 @@ file_parser.add_argument('file[]', location='files', type=FileStorage, required=
                     200: 'OK'})
 @api.expect(file_parser)
 class SendFiles(Resource):
-    decorators = [limiter.shared_limit("100/hour", scope="upload")]
+    # decorators = [limiter.shared_limit("100/hour", scope="upload")]
     def post(self):
         """Send files in pdb, sdf or cif format"""
         files = request.files.getlist('file[]')
@@ -227,7 +214,9 @@ class SendFiles(Resource):
         if not valid_suffix(files):
             return json_error(f'Unsupported format. Send only .sdf, .mol2, .cif and .pdb files.', status_code=400)
 
-        tmpdir = tempfile.mkdtemp()
+
+        tmpdir = tempfile.mkdtemp(dir=config['paths']['save_user_files'])
+        # tmpdir = tempfile.mkdtemp()
         identifiers_plus_filepath = {}
         identifiers_plus_filenames = {}
         for file in files:
@@ -236,16 +225,13 @@ class SendFiles(Resource):
             # convert formats (different new lines)
             subprocess.run(['dos2unix', path_to_file])
 
-            # user: uploaded_files + 1
-            uploaded_files(already_uploaded_count, request.remote_addr)
-            # if already_uploaded_count[request.remote_addr] > 100:
-            #     return json_error("Max files", 429)
-
             identifier = os.path.basename(tempfile.NamedTemporaryFile(prefix=file.filename.rsplit('.')[0]).name)
             identifiers_plus_filepath[identifier] = path_to_file
             identifiers_plus_filenames[file.filename.rsplit('.')[0]] = identifier
 
         save_file_identifiers(identifiers_plus_filepath)
+
+        collect_statistics(endpoint_name='send_files', number_of_sent_files=len(files))
 
         return json_ok({'structure_ids': identifiers_plus_filenames})
 
@@ -270,7 +256,7 @@ pid_parser.add_argument('pid[]', type=str, help='PDB ID', action='append', requi
                     400: 'File bigger than 10 Mb'})
 @api.expect(pid_parser)
 class PdbID(Resource):
-    decorators = [limiter.shared_limit("100/hour", scope="upload")]
+    # decorators = [limiter.shared_limit("100/hour", scope="upload")]
     def post(self):
         """Specify PDB ID of your structure."""
         pdb_identifiers = request.args.getlist('pid[]')
@@ -278,7 +264,7 @@ class PdbID(Resource):
         if not pdb_identifiers:
             return json_error('No pdb id specified. Add to URL following, please: ?pid[]=pdb_id')
 
-        tmpdir = tempfile.mkdtemp()
+        tmpdir = tempfile.mkdtemp(dir=config['paths']['save_user_files'])
         identifiers_plus_filepath = {}
         identifiers_plus_filename = {}
         for pdb_id in pdb_identifiers:
@@ -294,16 +280,13 @@ class PdbID(Resource):
             if not successfully_written_file:
                 return json_error(f'Not possible to upload {pdb_id}. It is bigger than 10 Mb.', 400)
 
-            # user: uploaded_files + 1
-            uploaded_files(already_uploaded_count, request.remote_addr)
-            # if already_uploaded_count[request.remote_addr] > 100:
-            #     return json_error("Max files", 429)
-
             identifier = os.path.basename(tempfile.NamedTemporaryFile(prefix=pdb_id).name)
             identifiers_plus_filepath[identifier] = path_to_file
             identifiers_plus_filename[pdb_id] = identifier
 
         save_file_identifiers(identifiers_plus_filepath)
+
+        collect_statistics(endpoint_name='PdbID', number_of_requested_structures=len(pdb_identifiers))
 
         return json_ok({'structure_ids': identifiers_plus_filename})
 
@@ -317,7 +300,7 @@ pubchem_parser.add_argument('cid[]', type=int, help='Compound CID', action='appe
                     400: 'File bigger than 10 Mb'})
 @api.expect(pubchem_parser)
 class PubchemCID(Resource):
-    decorators = [limiter.shared_limit("100/hour", scope="upload")]
+    # decorators = [limiter.shared_limit("100/hour", scope="upload")]
     def post(self):
         """Specify Pubchem CID of your structure."""
         cid_identifiers = request.args.getlist('cid[]')
@@ -325,7 +308,7 @@ class PubchemCID(Resource):
         if not cid_identifiers:
             return json_error('No pubchem cid specified. Add to URL following, please: ?cid[]=pubchem_cid')
 
-        tmpdir = tempfile.mkdtemp()
+        tmpdir = tempfile.mkdtemp(dir=config['paths']['save_user_files'])
         identifiers_plus_filepath = {}
         identifiers_plus_filenames = {}
         for cid in cid_identifiers:
@@ -344,32 +327,25 @@ class PubchemCID(Resource):
             if not successfully_written_file:
                 return json_error(f'Not possible to upload {cid}. It is bigger than 10 Mb.', 400)
 
-            # user: uploaded_files + 1
-            uploaded_files(already_uploaded_count, request.remote_addr)
-            # if already_uploaded_count[request.remote_addr] > 100:
-            #     return json_error("Max files", 429)
-
             identifier = os.path.basename(tempfile.NamedTemporaryFile(prefix=cid).name)
             identifiers_plus_filepath[identifier] = path_to_file
             identifiers_plus_filenames[cid] = identifier
 
         save_file_identifiers(identifiers_plus_filepath)
 
+        collect_statistics(endpoint_name='PubchemCID', number_of_requested_structures=len(cid_identifiers))
+
         return json_ok({'structure_ids': identifiers_plus_filenames})
 
 
 def get_path_based_on_identifier(structure_id: str):
-    # with open("/tmp/file_identifiers.json", mode="r") as file:
-    #     data = json.load(file)
-    #     for record in data:
-    #         if record["identifier"] == identifier:
-    #             return record["path_to_file"]
-    #     return None
-    with open('/tmp/file_identifiers.csv', mode='r') as file:
-        reader = csv.reader(file)
-        for row in reader:
-            if row[0] == structure_id:
-                return row[1]
+    if structure_id in file_manager:
+        return file_manager[structure_id]
+    # with open(config['paths']['save_file_identifiers_file'], mode='r') as file:
+    #     reader = csv.reader(file)
+    #     for row in reader:
+    #         if row[0] == structure_id:
+    #             return row[1]
     return None
 
 
@@ -388,12 +364,12 @@ def get_pdb_input_file(structure_id: str) -> str:
     input_file = get_path_based_on_identifier(structure_id)
     if not input_file:
         raise ValueError(f'Structure ID {structure_id} does not exist.')
-    # cif format convert to pdb
+    # cif format convert to pdb using gemmi convert
     if input_file.endswith('.cif'):
         try:
-            subprocess.run(['obabel', f'-immcif', f'{input_file}', f'-opdb', f'-O{input_file[:-4]}.pdb'], check=True)
+            subprocess.run(['gemmi', 'convert', f'{input_file}', f'{input_file[:-4]}.pdb'], check=True)
         except subprocess.CalledProcessError:
-            raise ValueError(f'Error converting from .cif to .pdb using openbabel.')
+            raise ValueError(f'Error converting from .cif to .pdb using gemmi convert.')
         input_file = input_file[:-4] + '.pdb'
     if not input_file.endswith('pdb'):
         raise ValueError(f'{structure_id} is not in .pdb or .cif format')
@@ -441,13 +417,13 @@ class AddHydrogens(Resource):
 
         ph = request.args.get('pH')
         if not ph:
-            ph = 7.0
+            ph = float(config['pH']['default'])
 
         try:
             input_file = get_pdb_input_file(structure_id)
         except ValueError as e:
             return json_error(f'{str(e)}', status_code=400)
-        output_pqr_file = os.path.join(tempfile.mkdtemp(), 'result.pqr')
+        output_pqr_file = os.path.join(tempfile.mkdtemp(dir=config['paths']['save_user_files']), 'result.pqr')
         output_pdb_file = output_pqr_file[:-4] + '.pdb'
 
         # hydrogen bond optimalization
@@ -470,6 +446,9 @@ class AddHydrogens(Resource):
         except ValueError as e:
             return json_error(f'{str(e)}', status_code=405)
         save_file_identifiers({output_identifier: output_pdb_file})
+
+        collect_statistics(endpoint_name='AddHydrogens', ph=ph, noopt=noopt)
+
         return json_ok({'structure_id': output_identifier})
 
 
@@ -538,6 +517,10 @@ class GetInfo(Resource):
 
         molecules_count, atom_count, atoms_list_count = chargefw2_python.get_info(molecules)
         atoms_dict_count = get_dict_atoms_count(atoms_list_count)
+
+        collect_statistics(endpoint_name='GetInfo', number_of_molecules=molecules_count,
+                           number_of_atoms=atom_count, number_of_individdual_atoms=atoms_dict_count)
+
         return json_ok({'Number of molecules': molecules_count,
                         'Number of atoms': atom_count,
                         'Number of individual atoms': atoms_dict_count})
@@ -596,6 +579,8 @@ class SuitableMethods(Resource):
         except ValueError as e:
             return json_error(str(e), status_code=400)
 
+        collect_statistics(endpoint_name='SuitableMethods', suitable_methods=suitable_methods)
+
         return json_ok({'suitable_methods': suitable_methods})
 
 
@@ -606,6 +591,16 @@ def get_calculated_charges(structure_id: str, method: str, parameter: str, read_
     except ValueError as e:
         raise ValueError(e)
     return chargefw2_python.calculate_charges(molecules, method, parameter)
+
+
+def round_charges(charges):
+    rounded_charges = []
+    for key in charges.keys():
+        tmp = {}
+        tmp[key] = list(map(lambda x: round(x, 4), charges[key]))
+        rounded_charges.append(tmp)
+    return rounded_charges
+
 
 
 calc_parser = reqparse.RequestParser()
@@ -686,8 +681,28 @@ class CalculateCharges(Resource):
                 parameters = suitable_methods[method][0]
 
         try:
+            if config['limits']['on'] == 'True':
+                if request.remote_addr in long_calculations and long_calculations[request.remote_addr] >= int(config['limits']['max_long_calc']):
+                    return json_error(f'You can perform only {config["limits"]["max_long_calc"]} time demanding calculations per day.')
+
+            calc_start = time.perf_counter()
             charges = get_calculated_charges(structure_id, method, parameters, read_hetatm, ignore_water)
-            rounded_charges = list(map(lambda x: round(x, 4), charges["".join(charges.keys())]))
+            calc_end = time.perf_counter()
+
+            # return ', '.join(charges.keys())
+            if config['limits']['on'] == 'True':
+                if calc_end - calc_start > float(config['limits']['calc_time']):
+                    add_long_calc(long_calculations, request.remote_addr)
+
+            rounded_charges = round_charges(charges)
+
+            suffix = get_path_based_on_identifier(structure_id)[-3:]
+            molecules_count, atom_count, atoms_list_count = chargefw2_python.get_info(get_molecules(structure_id, read_hetatm, ignore_water))
+            collect_statistics('CalculateCharges', suffix=suffix,
+                               number_of_molecules=molecules_count,
+                               number_of_atoms=atom_count, method=method,
+                               parameters=parameters,
+                               calculation_time=round(calc_end-calc_start, 2))
         except ValueError as e:
             return json_error(str(e))
         return json_ok({'charges': rounded_charges, 'method': method, 'parameters': parameters})
@@ -695,7 +710,53 @@ class CalculateCharges(Resource):
 
 @app.route('/ip')
 def ip():
-    return dict(already_uploaded_count)
+    return dict(long_calculations)
+
+
+def add_long_calc(dict, user_add):
+    """Add long calculation to user"""
+    dict[user_add] = dict.get(user_add, 0) + 1
+
+
+def increase_limit():
+    to_delete = []
+    for user in long_calculations:
+        if long_calculations[user] > 1:
+            long_calculations[user] -= 1
+        else:
+            to_delete.append(user)
+    for user in to_delete:
+        del long_calculations[user]
+
+    # threading.Timer(30, increase_limit).start()
+
+
+class RepeatTimer(Timer):
+    def run(self):
+        while not self.finished.wait(self.interval):
+            self.function(*self.args, **self.kwargs)
+
+
+# user can process only limited number of long
+if config['limits']['on'] == 'True':
+    manager = Manager()
+    long_calculations = manager.dict()
+    del_timer = RepeatTimer(float(config['limits']['decrease_restriction']), increase_limit)
+    del_timer.start()
+
+
+file_manager = Manager().dict()
+
+
+@app.route('/count')
+def count():
+    # this Timer increase number if the counting is too long
+    timer = RepeatTimer(5, add_long_calc, [long_calculations, request.remote_addr])
+    timer.start()
+    time.sleep(10)
+    timer.cancel()
+    # return f'{long_calculations}'
+    return 'in /home/chargefw2'
 
 
 if __name__ == '__main__':
