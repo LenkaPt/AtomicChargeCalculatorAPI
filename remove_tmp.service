@@ -1,0 +1,7 @@
+[Unit]
+Description=Removes apache2 tmp
+Wants=remove_tmp.timer
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /etc/systemd/system/remove_tmp.py

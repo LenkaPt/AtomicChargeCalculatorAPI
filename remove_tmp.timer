@@ -1,0 +1,10 @@
+[Unit]
+Description=Executes the remove_tmp service every morning.
+Requires=remove_tmp.service
+
+[Timer]
+OnCalendar=*-*-* *:00:00
+
+[Install]
+WantedBy=timers.target
+
