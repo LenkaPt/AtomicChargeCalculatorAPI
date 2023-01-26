@@ -16,7 +16,8 @@ from threading import Timer
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 import configparser
-
+import pathlib
+import shutil
 
 config = configparser.ConfigParser()
 config.read('api.ini')
@@ -29,6 +30,7 @@ api = Api(app,
                       'designated for calculation of partial atomic charges.\n'
                       '<br>'
                       '<a href="http://78.128.250.156/documentation">Documentation</a>')
+
 
 # limiter = Limiter(
 #     app,
@@ -53,13 +55,11 @@ send_files = api.namespace('send_files',
                                        'possible to upload only files '
                                        'of max size 10 MB.')
 
-
 # namespace for getting structure through PDB ID
 pid = api.namespace('pdb_id',
                     description='Specify PDB ID of structure of your '
                                 'interest and obtain structure identifier used '
                                 'for further operation with your structure.')
-
 
 # namespace for getting compound through Pubchem CID
 cid = api.namespace('pubchem_cid',
@@ -67,37 +67,37 @@ cid = api.namespace('pubchem_cid',
                                 'interest and obtain structure identifier used for '
                                 'further operation with your structure.')
 
+remove_file = api.namespace('remove_file',
+                            description='Remove file specified by id')
 
 # namespace for get_info about molecules root
 get_info = api.namespace('get_info',
                          description='Get info about your structure.')
-
 
 # namespace for adding hydrogens to structure
 hydrogens = api.namespace('add_hydrogens',
                           description='WIP: Might not work as expected - works just fo structures in .pdb format! '
                                       'Add hydrogens to your structure.')
 
-
 # namespace for available_method root - for documentation
 avail_methods = api.namespace('available_methods',
                               description='Get available methods provided by Atomic Charge Calculator '
                                           'for calculation of partial atomic charges')
 
-
 # namespace for available parameters route - for documentation
 avail_params = api.namespace('available_parameters',
                              description='Get available parameters for specific method')
-
 
 # namespace for suitable methods
 suitable_methods = api.namespace('suitable_methods',
                                  description='Find out all methods suitable '
                                              'for your structure.')
 
-
 calculate_charges = api.namespace('calculate_charges',
                                   description='Calculate partial atomic charges.')
+
+get_limits = api.namespace('get_limits',
+                           description='Get info about limits, your files.')
 
 
 def json_ok(data):
@@ -111,6 +111,29 @@ def json_error(message: str, status_code=404):
             'message': message}, status_code
 
 
+def calculate_time(func):
+    def inner(*args, **kwargs):
+        with open(config['paths']['log_time'], mode='a') as file:
+            file.write(f'---STARTING---{func.__qualname__}\n')
+            file.write(f'{time.asctime(time.localtime(time.time()))}\n')
+
+        start = time.perf_counter()
+        returned_value = func(*args, **kwargs)
+        end = time.perf_counter()
+
+        with open(config['paths']['log_time'], mode='a') as file:
+            file.write(f'{date.today().strftime("%d/%m/%Y")}, '
+                       f'{time.strftime("%H:%M:%S", time.localtime())} - '
+                       f'{func.__qualname__} - {end - start}\n')
+            file.write(f'---ENDING---{func.__qualname__}\n')
+
+        # return value from function
+        return returned_value
+
+    return inner
+
+
+@calculate_time
 def collect_statistics(endpoint_name, **kwargs):
     with open(config['paths']['save_statistics_file'], mode='a') as file:
         writer = csv.writer(file)
@@ -121,10 +144,22 @@ def collect_statistics(endpoint_name, **kwargs):
             args.append(connected)
 
         writer.writerow([request.remote_addr,
-                        date.today().strftime("%d/%m/%Y"),
-                        time.strftime("%H:%M:%S", time.localtime())] +
+                         date.today().strftime("%d/%m/%Y"),
+                         time.strftime("%H:%M:%S", time.localtime())] +
                         ['endpoint_name=' + endpoint_name] +
                         args)
+
+
+def log_error(message, endpoint_name, **kwargs):
+    with open(config['paths']['log_error'], mode='a') as file:
+        file.write(f'{request.remote_addr}, '
+                   f'{date.today().strftime("%d/%m/%Y")}, '
+                   f'{time.strftime("%H:%M:%S", time.localtime())}, '
+                   f'endpoint_name={endpoint_name}, '
+                   f'error_message={message}')
+        for key, value in kwargs.items():
+            file.write(f', {key}={value}')
+        file.write('\n')
 
 
 @avail_methods.route('')
@@ -145,10 +180,13 @@ class AvailableParameters(Resource):
         """Returns list of available parameters for specific method"""
         method = request.args.get('method')
         if not method:
+            log_error('User did not specify method', endpoint_name='available_parameters')
             return json_error(f'You have not specified method. '
                               f'Add to URL following, please: ?method=your_chosen_method')
 
         if method not in chargefw2_python.get_available_methods():
+            log_error(f'User wanted to use method {method} that is not available',
+                      endpoint_name='available_parameters')
             return json_error(f'Method {method} is not available.', status_code=400)
 
         collect_statistics(endpoint_name='available_parameters', method=method)
@@ -163,12 +201,6 @@ class AvailableParameters(Resource):
 #     )
 
 
-
-
-
-
-
-
 def valid_suffix(files: TextIO) -> bool:
     for file in files:
         if not file.filename.endswith(('sdf', 'pdb', 'mol2', 'cif')):
@@ -177,8 +209,12 @@ def valid_suffix(files: TextIO) -> bool:
 
 
 def save_file_identifiers(identifiers: Dict[str, str]) -> None:
+    if request.remote_addr not in user_id_manager:
+        user_id_manager[request.remote_addr] = manager.list()
     for identifier, path_to_file in identifiers.items():
         file_manager[identifier] = path_to_file
+        user_id_manager[request.remote_addr].append(identifier)
+        # {user: [id1, id2]}
     # while 'file_id' in file_manager or file_manager.get('file_id', 0) >= 1:
     #     time.sleep(0.01)
     # file_manager['file_id'] = file_manager.get('file_id', 0) + 1
@@ -196,6 +232,8 @@ def save_file_identifiers(identifiers: Dict[str, str]) -> None:
 # TODO not good - just one file (action='append' not working with files)
 file_parser = api.parser()
 file_parser.add_argument('file[]', location='files', type=FileStorage, required=True)
+
+
 @send_files.route('')
 @api.doc(responses={404: 'No file sent',
                     400: 'Unsupported format',
@@ -209,11 +247,12 @@ class SendFiles(Resource):
         files = request.files.getlist('file[]')
 
         if not files:
+            log_error('User did not send a file', endpoint_name='send_files')
             return json_error(f'No file sent. Add to URL following, please: ?file[]=path_to_file')
 
         if not valid_suffix(files):
+            log_error(f'User sent file in unsupported format', endpoint_name='send_files')
             return json_error(f'Unsupported format. Send only .sdf, .mol2, .cif and .pdb files.', status_code=400)
-
 
         tmpdir = tempfile.mkdtemp(dir=config['paths']['save_user_files'])
         # tmpdir = tempfile.mkdtemp()
@@ -250,6 +289,8 @@ def write_file(path_to_file, r):
 # parser for query arguments
 pid_parser = reqparse.RequestParser()
 pid_parser.add_argument('pid[]', type=str, help='PDB ID', action='append', required=True)
+
+
 @pid.route('')
 @api.doc(responses={404: 'No PDB iD specified or PDB ID does not exist',
                     200: 'OK',
@@ -262,6 +303,7 @@ class PdbID(Resource):
         pdb_identifiers = request.args.getlist('pid[]')
 
         if not pdb_identifiers:
+            log_error('User did not specify pdb ID', endpoint_name='pdb_id')
             return json_error('No pdb id specified. Add to URL following, please: ?pid[]=pdb_id')
 
         tmpdir = tempfile.mkdtemp(dir=config['paths']['save_user_files'])
@@ -272,12 +314,14 @@ class PdbID(Resource):
             try:
                 r.raise_for_status()
             except requests.exceptions.HTTPError as e:
+                log_error(f'{e}', endpoint_name='pdb_id', status_code=r.status_code)
                 return json_error(f'{e}', r.status_code)
 
             # save requested pdb structure
             path_to_file = os.path.join(tmpdir, pdb_id + '.cif')
             successfully_written_file = write_file(path_to_file, r)
             if not successfully_written_file:
+                log_error('User wanted to upload file bigger than 10 Mb', endpoint_name='pdb_id')
                 return json_error(f'Not possible to upload {pdb_id}. It is bigger than 10 Mb.', 400)
 
             identifier = os.path.basename(tempfile.NamedTemporaryFile(prefix=pdb_id).name)
@@ -286,7 +330,7 @@ class PdbID(Resource):
 
         save_file_identifiers(identifiers_plus_filepath)
 
-        collect_statistics(endpoint_name='PdbID', number_of_requested_structures=len(pdb_identifiers))
+        collect_statistics(endpoint_name='pdb_id', number_of_requested_structures=len(pdb_identifiers))
 
         return json_ok({'structure_ids': identifiers_plus_filename})
 
@@ -294,6 +338,8 @@ class PdbID(Resource):
 # parser for query arguments
 pubchem_parser = reqparse.RequestParser()
 pubchem_parser.add_argument('cid[]', type=int, help='Compound CID', action='append', required=True)
+
+
 @cid.route('')
 @api.doc(responses={404: 'No Pubchem compound ID specified or compound ID does not exist',
                     200: 'OK',
@@ -306,6 +352,7 @@ class PubchemCID(Resource):
         cid_identifiers = request.args.getlist('cid[]')
 
         if not cid_identifiers:
+            log_error('User did not specify pubchem cid', endpoint_name='pubchem_id')
             return json_error('No pubchem cid specified. Add to URL following, please: ?cid[]=pubchem_cid')
 
         tmpdir = tempfile.mkdtemp(dir=config['paths']['save_user_files'])
@@ -319,12 +366,14 @@ class PubchemCID(Resource):
             try:
                 r.raise_for_status()
             except requests.exceptions.HTTPError as e:
+                log_error(f'{e}', endpoint_name='pubchem_cid', status_code=r.status_code)
                 return json_error(f'{e}', r.status_code)
 
             # save requested cid compound
             path_to_file = os.path.join(tmpdir, cid + '.sdf')
             successfully_written_file = write_file(path_to_file, r)
             if not successfully_written_file:
+                log_error('User wanted to upload file bigger than 10 Mb', endpoint_name='cid')
                 return json_error(f'Not possible to upload {cid}. It is bigger than 10 Mb.', 400)
 
             identifier = os.path.basename(tempfile.NamedTemporaryFile(prefix=cid).name)
@@ -333,11 +382,48 @@ class PubchemCID(Resource):
 
         save_file_identifiers(identifiers_plus_filepath)
 
-        collect_statistics(endpoint_name='PubchemCID', number_of_requested_structures=len(cid_identifiers))
+        collect_statistics(endpoint_name='pubchem_cid', number_of_requested_structures=len(cid_identifiers))
 
         return json_ok({'structure_ids': identifiers_plus_filenames})
 
 
+remove_file_parser = reqparse.RequestParser()
+remove_file_parser.add_argument('structure_id',
+                                type=str,
+                                help='Obtained structure identifier of your structure',
+                                required=True)
+
+
+@api.doc(responses={404: 'Structure ID not specified',
+                    400: 'Structure ID does not exist / Structure not in correct format',
+                    200: 'OK'})
+@api.expect(remove_file_parser)
+@remove_file.route('')
+class RemoveFile(Resource):
+    def post(self):
+        """Remove file specified by structure_id"""
+        structure_id = request.args.get('structure_id')
+        # TODO - kontrolovat, jestli to id je uživatelovo - až budu mít udělaný ten slovník {user:[id1, id2]}
+        if not structure_id:
+            log_error('User did not specify structure id', endpoint_name='add_hydrogens')
+            return json_error(f'You have not specified structure ID obtained after uploading your file. '
+                              f'Add to URL following, please: ?structure_id=obtained_structure_id')
+        path_to_file = get_path_based_on_identifier(structure_id)
+        if not path_to_file:
+            log_error('User specified id that does not exist.', endpoint_name='remove_file', structure_id=structure_id)
+            return json_error(f'Structure ID {structure_id} does not exist.', 400)
+        path_to_file = pathlib.Path(path_to_file)
+        file_size = path_to_file.stat().st_size
+
+        # remove from file_manager
+        del file_manager[structure_id]
+        os.remove(path_to_file)
+        path_to_file.parent.rmdir()
+        return json_ok({structure_id: 'removed'})
+        # TODO odečítat od omezující celkové hodnoty na omezení místa uživateli
+
+
+@calculate_time
 def get_path_based_on_identifier(structure_id: str):
     if structure_id in file_manager:
         return file_manager[structure_id]
@@ -349,6 +435,7 @@ def get_path_based_on_identifier(structure_id: str):
     return None
 
 
+@calculate_time
 def get_molecules(structure_id: str, read_hetatm: bool = True, ignore_water: bool = False):
     path_to_file = get_path_based_on_identifier(structure_id)
     if path_to_file is None:
@@ -400,6 +487,8 @@ hydro_parser.add_argument('noopt',
                           help='Use in case that you would not like to '
                                'optimize hydrogen bonds.\n'
                                'Default: True')
+
+
 @hydrogens.route('')
 @api.doc(responses={404: 'Structure ID not specified',
                     400: 'Structure ID does not exist / Structure not in correct format',
@@ -412,6 +501,7 @@ class AddHydrogens(Resource):
         Add hydrogens to your structure represented by an structure identifier"""
         structure_id = request.args.get('structure_id')
         if not structure_id:
+            log_error('User did not specify structure id', endpoint_name='add_hydrogens')
             return json_error(f'You have not specified structure ID obtained after uploading your file. '
                               f'Add to URL following, please: ?structure_id=obtained_structure_id')
 
@@ -422,6 +512,7 @@ class AddHydrogens(Resource):
         try:
             input_file = get_pdb_input_file(structure_id)
         except ValueError as e:
+            log_error(f'{str(e)}', endpoint_name='add_hydrogens')
             return json_error(f'{str(e)}', status_code=400)
         output_pqr_file = os.path.join(tempfile.mkdtemp(dir=config['paths']['save_user_files']), 'result.pqr')
         output_pdb_file = output_pqr_file[:-4] + '.pdb'
@@ -431,23 +522,29 @@ class AddHydrogens(Resource):
 
         if not noopt:
             try:
-                subprocess.run(['pdb2pqr30', f'--noopt', f'--pH', f'{ph}', f'{input_file}', f'{output_pqr_file}'], check=True)
+                subprocess.run(['pdb2pqr30', f'--noopt', f'--pH', f'{ph}', f'{input_file}', f'{output_pqr_file}'],
+                               check=True)
             except subprocess.CalledProcessError:
+                log_error('Error occurred when using pdb2pqr30', endpoint_name='add_hydrogens',
+                          structure_id=structure_id)
                 return json_error(f'Error occurred when using pdb2pqr30 on structure {structure_id}', status_code=405)
         else:
             try:
                 subprocess.run(['pdb2pqr30', f'--pH', f'{ph}', f'{input_file}', f'{output_pqr_file}'], check=True)
             except subprocess.CalledProcessError:
+                log_error('Error occurred when using pdb2pqr30', endpoint_name='add_hydrogens',
+                          structure_id=structure_id)
                 return json_error(f'Error occurred when using pdb2pqr30 on structure {structure_id}', status_code=405)
 
         output_identifier = os.path.basename(tempfile.NamedTemporaryFile(prefix='hydro').name)
         try:
             convert_pqr_to_pdb(output_pqr_file, output_pdb_file)
         except ValueError as e:
+            log_error(f'{str(e)}', endpoint_name='add_hydrogens')
             return json_error(f'{str(e)}', status_code=405)
         save_file_identifiers({output_identifier: output_pdb_file})
 
-        collect_statistics(endpoint_name='AddHydrogens', ph=ph, noopt=noopt)
+        collect_statistics(endpoint_name='add_hydrogens', ph=ph, noopt=noopt)
 
         return json_ok({'structure_id': output_identifier})
 
@@ -492,6 +589,8 @@ info_parser.add_argument('ignore_water',
                          help='Use in case that you would like to ignore '
                               'water molecules.\n'
                               'Default: False')
+
+
 @get_info.route('')
 @api.doc(responses={404: 'Structure ID not specified',
                     400: 'Structure ID does not exist or input file is not correct',
@@ -504,6 +603,7 @@ class GetInfo(Resource):
         read_hetatm = request.args.get('read_hetatm')
         ignore_water = request.args.get('ignore_water')
         if not structure_id:
+            log_error('User did not specify structure id', endpoint_name='get_info')
             return json_error(f'You have not specified structure ID obtained after uploading your file. '
                               f'Add to URL following, please: ?structure_id=obtained_structure_id')
 
@@ -513,12 +613,13 @@ class GetInfo(Resource):
         try:
             molecules = get_molecules(structure_id, read_hetatm, ignore_water)
         except ValueError as e:
+            log_error(str(e), endpoint_name='get_info')
             return json_error(str(e), status_code=400)
 
         molecules_count, atom_count, atoms_list_count = chargefw2_python.get_info(molecules)
         atoms_dict_count = get_dict_atoms_count(atoms_list_count)
 
-        collect_statistics(endpoint_name='GetInfo', number_of_molecules=molecules_count,
+        collect_statistics(endpoint_name='get_info', number_of_molecules=molecules_count,
                            number_of_atoms=atom_count, number_of_individdual_atoms=atoms_dict_count)
 
         return json_ok({'Number of molecules': molecules_count,
@@ -526,6 +627,7 @@ class GetInfo(Resource):
                         'Number of individual atoms': atoms_dict_count})
 
 
+@calculate_time
 def get_suitable_methods(structure_id: str, read_hetatm: bool, ignore_water: bool):
     """Returns suitable methods for particular dataset"""
     molecules = get_molecules(structure_id, read_hetatm, ignore_water)
@@ -555,6 +657,8 @@ suit_parser.add_argument('ignore_water',
                          help='Use in case that you would like to ignore '
                               'water molecules.\n'
                               'Default: False')
+
+
 @suitable_methods.route('')
 @api.doc(responses={404: 'Structure ID not specified',
                     400: 'Structure ID does not exist or input file is not correct',
@@ -567,6 +671,7 @@ class SuitableMethods(Resource):
         read_hetatm = request.args.get('read_hetatm')
         ignore_water = request.args.get('ignore_water')
         if not structure_id:
+            log_error('User did not specify structure id', endpoint_name='suitable_methods')
             return json_error(f'You have not specified structure ID obtained after uploading your file. '
                               f'Add to URL following, please: ?structure_id=obtained_structure_id')
 
@@ -577,22 +682,22 @@ class SuitableMethods(Resource):
             suitable_methods = get_suitable_methods(structure_id, read_hetatm, ignore_water)
             suitable_methods = empty_brackets_to_null(suitable_methods)
         except ValueError as e:
+            log_error(str(e), endpoint_name='suitable_methods')
             return json_error(str(e), status_code=400)
 
-        collect_statistics(endpoint_name='SuitableMethods', suitable_methods=suitable_methods)
+        collect_statistics(endpoint_name='suitable_methods', suitable_methods=suitable_methods)
 
         return json_ok({'suitable_methods': suitable_methods})
 
 
+@calculate_time
 def get_calculated_charges(structure_id: str, method: str, parameter: str, read_hetatm: bool, ignore_water: bool):
     """Returns calculated charges of given set of molecules"""
-    try:
-        molecules = get_molecules(structure_id, read_hetatm, ignore_water)
-    except ValueError as e:
-        raise ValueError(e)
+    molecules = get_molecules(structure_id, read_hetatm, ignore_water)
     return chargefw2_python.calculate_charges(molecules, method, parameter)
 
 
+@calculate_time
 def round_charges(charges):
     rounded_charges = []
     for key in charges.keys():
@@ -600,7 +705,6 @@ def round_charges(charges):
         tmp[key] = list(map(lambda x: round(x, 4), charges[key]))
         rounded_charges.append(tmp)
     return rounded_charges
-
 
 
 calc_parser = reqparse.RequestParser()
@@ -624,6 +728,8 @@ calc_parser.add_argument('ignore_water',
                          help='Use in case that you would like to ignore '
                               'water molecules.\n'
                               'Default: False')
+
+
 @calculate_charges.route('')
 @api.doc(responses={404: 'Structure ID not specified',
                     400: 'Structure ID does not exist/'
@@ -634,6 +740,7 @@ calc_parser.add_argument('ignore_water',
                     200: 'OK'})
 @api.expect(calc_parser)
 class CalculateCharges(Resource):
+    @calculate_time
     def get(self):
         structure_id = request.args.get('structure_id')
         method = request.args.get('method')
@@ -646,17 +753,52 @@ class CalculateCharges(Resource):
         ignore_water = get_ignore_water_value(ignore_water)  # default False
 
         if not structure_id:
+            log_error('User did not specify structure id', endpoint_name='calculate_charges')
             return json_error(f'You have not specified structure ID obtained after uploading your file. '
                               f'Add to URL following, please: ?structure_id=obtained_structure_id')
 
+        try:
+            molecules = get_molecules(structure_id, read_hetatm, ignore_water)
+        except ValueError as e:
+            return json_error(str(e), 400)
+
+        # TODO debugging purposes
+        with open(config['paths']['log_time'], mode='a') as file:
+            file.write(f'{time.asctime(time.localtime(time.time()))} - '
+                       f'Before getting suitable methods\n')
+
+        # commented?
+        try:
+            suitable_methods = chargefw2_python.get_suitable_methods(molecules)
+        except ValueError as e:
+            return json_error(str(e), 400)
+
+        # TODO debugging purposes
+        with open(config['paths']['log_time'], mode='a') as file:
+            file.write(f'{time.asctime(time.localtime(time.time()))} - '
+                       f'After getting suitable methods\n')
+
         if method and method not in chargefw2_python.get_available_methods():
+            log_error('User wanted to use method that is not available', endpoint_name='calculate_charges',
+                      method=method)
             return json_error(f'Method {method} is not available.', status_code=400)
 
+        # TODO debugging purposes
+        with open(config['paths']['log_time'], mode='a') as file:
+            file.write(f'{time.asctime(time.localtime(time.time()))} - '
+                       f'After checking if method is in available methods\n')
+
+        # commented
         try:
-            if method and method not in get_suitable_methods(structure_id, read_hetatm, ignore_water):
+            if method and method not in suitable_methods:
                 return json_error(f'Method {method} is not suitable for {structure_id}.', status_code=400)
         except ValueError as e:
             return json_error(str(e))
+
+        # TODO debugging purposes
+        with open(config['paths']['log_time'], mode='a') as file:
+            file.write(f'{time.asctime(time.localtime(time.time()))} - '
+                       f'After checking if method is in suitable methods\n')
 
         if method and not parameters:
             try:
@@ -668,26 +810,37 @@ class CalculateCharges(Resource):
         # wrong or not compatible parameters
         if method and parameters:
             if parameters not in chargefw2_python.get_available_parameters(method):
+                log_error('Parameters are not available for method', endpoint_name='calculate_charges',
+                          parameters=parameters, method=method)
                 return json_error(f'Parameters {parameters} are not available for method {method}.', status_code=400)
 
+            # TODO debugging purposes
+        with open(config['paths']['log_time'], mode='a') as file:
+            file.write(f'{time.asctime(time.localtime(time.time()))} - '
+                       f'After cheking if parameters are in available parameters\n')
+
+        # commented
         if not method:
-            try:
-                suitable_methods = get_suitable_methods(structure_id, read_hetatm, ignore_water)
-            except ValueError as e:
-                return json_error(str(e), 400)
             method = list(suitable_methods)[0]
-            parameters = None        # if method does not require parameters
+            parameters = None  # if method does not require parameters
             if suitable_methods[method]:
                 parameters = suitable_methods[method][0]
 
         try:
             if config['limits']['on'] == 'True':
-                if request.remote_addr in long_calculations and long_calculations[request.remote_addr] >= int(config['limits']['max_long_calc']):
-                    return json_error(f'You can perform only {config["limits"]["max_long_calc"]} time demanding calculations per day.')
+                if request.remote_addr in long_calculations and long_calculations[request.remote_addr] >= int(
+                        config['limits']['max_long_calc']):
+                    log_error('User has too many time demanding calculations per day.')
+                    return json_error(
+                        f'You can perform only {config["limits"]["max_long_calc"]} time demanding calculations per day.')
 
             calc_start = time.perf_counter()
-            charges = get_calculated_charges(structure_id, method, parameters, read_hetatm, ignore_water)
+            charges = chargefw2_python.calculate_charges(molecules, method, parameters)
             calc_end = time.perf_counter()
+
+            with open(config['paths']['log_time'], mode='a') as file:
+                file.write(f'{time.asctime(time.localtime(time.time()))} - '
+                           f'Calculation inside..debugging - {calc_end - calc_start}\n')
 
             # return ', '.join(charges.keys())
             if config['limits']['on'] == 'True':
@@ -697,20 +850,54 @@ class CalculateCharges(Resource):
             rounded_charges = round_charges(charges)
 
             suffix = get_path_based_on_identifier(structure_id)[-3:]
-            molecules_count, atom_count, atoms_list_count = chargefw2_python.get_info(get_molecules(structure_id, read_hetatm, ignore_water))
-            collect_statistics('CalculateCharges', suffix=suffix,
+            molecules_count, atom_count, atoms_list_count = chargefw2_python.get_info(molecules)
+            collect_statistics('calculate_charges', suffix=suffix,
                                number_of_molecules=molecules_count,
                                number_of_atoms=atom_count, method=method,
                                parameters=parameters,
-                               calculation_time=round(calc_end-calc_start, 2))
+                               calculation_time=round(calc_end - calc_start, 2))
         except ValueError as e:
+            log_error(str(e), endpoint_name='calculate_charges')
             return json_error(str(e))
         return json_ok({'charges': rounded_charges, 'method': method, 'parameters': parameters})
 
 
-@app.route('/ip')
-def ip():
-    return dict(long_calculations)
+def get_users_files_info(user):
+    """Returns id, file name and info when the file was lastly modified for particular use"""
+    files_info = []
+    ids = user_id_manager[user]
+    for id in ids:
+        path_to_file = pathlib.Path(file_manager[id])
+        file_name = path_to_file.name
+        files_info.append(f'ID: {id}, '
+                          f'name of file: {file_name}, '
+                          f'file was last modified before {round(time.time() - path_to_file.stat().st_mtime, 2)}s.')
+    return '\n'.join(files_info)
+
+
+@get_limits.route('')
+class GetLimits(Resource):
+    def get(self):
+        if config['limits']['on'] == 'True':
+            file_size = int(config['limits']['file_size'])
+            max_long_calc = int(config['limits']['max_long_calc'])
+            current_user = request.remote_addr
+            if current_user in long_calculations:
+                curr_user_has_long_calc = long_calculations[current_user]
+            else:
+                curr_user_has_long_calc = 0
+            if current_user in user_id_manager:
+                files_info = get_users_files_info(current_user)
+            else:
+                files_info = 'Currently you have no uploaded structures - no ids.'
+            return jsonify({'Max file size': file_size,
+                            'Max allowed long calculations': max_long_calc,
+                            'You are allowed to have long calculations': max_long_calc - curr_user_has_long_calc,
+                            'Your files': files_info,
+                            'Removing files': f'Files that was not modified '
+                                              f'for more than {int(config["remove_tmp"]["older_than"])}s '
+                                              f'are removed once every {int(config["remove_tmp"]["every_x_seconds"])}s.'})
+        return jsonify({'message': 'No restrictions turned on'})
 
 
 def add_long_calc(dict, user_add):
@@ -728,8 +915,6 @@ def increase_limit():
     for user in to_delete:
         del long_calculations[user]
 
-    # threading.Timer(30, increase_limit).start()
-
 
 class RepeatTimer(Timer):
     def run(self):
@@ -737,26 +922,64 @@ class RepeatTimer(Timer):
             self.function(*self.args, **self.kwargs)
 
 
+manager = Manager()
+
 # user can process only limited number of long
 if config['limits']['on'] == 'True':
-    manager = Manager()
     long_calculations = manager.dict()
+    used_space = manager.dict()
     del_timer = RepeatTimer(float(config['limits']['decrease_restriction']), increase_limit)
     del_timer.start()
 
+file_manager = manager.dict()  # id: path_to_file
+user_id_manager = manager.dict()  # {user:[id1, id2]} TODO remove - not using now
 
-file_manager = Manager().dict()
+
+def delete_id_from_user(identifier):
+    for user in user_id_manager:
+        if identifier in user_id_manager[user]:
+            user_id_manager[user].remove(identifier)
+            if len(user_id_manager[user]) == 0:
+                del user_id_manager[user]
 
 
-@app.route('/count')
-def count():
-    # this Timer increase number if the counting is too long
-    timer = RepeatTimer(5, add_long_calc, [long_calculations, request.remote_addr])
-    timer.start()
-    time.sleep(10)
-    timer.cancel()
-    # return f'{long_calculations}'
-    return 'in /home/chargefw2'
+def delete_old_records():
+    removed = []  # TODO testing purposes
+    identifiers = file_manager.keys()
+    for identifier in identifiers:
+        path_to_id = pathlib.Path(file_manager[identifier])
+        file_is_old = time.time() - path_to_id.stat().st_mtime
+        if file_is_old > float(config['remove_tmp']['older_than']):
+            removed.append(file_manager[identifier])  # TODO testing purposes
+            # delete id and path_to structure from file_manager
+            del file_manager[identifier]
+            # delete id from ids of user
+            delete_id_from_user(identifier)
+            with open(config['remove_tmp']['log'], mode='a') as output:
+                output.write(f'{date.today().strftime("%d/%m/%Y")}, '
+                             f'{time.strftime("%H:%M:%S", time.localtime())} '
+                             f'Removing {path_to_id}, '
+                             f'File was last modified before {round(file_is_old, 2)}s.\n')
+            os.remove(path_to_id)
+            path_to_id.parent.rmdir()
+    return removed  # TODO testing purposes
+
+
+# Remove file manager and tmp files repeatedly
+remove_tmp = RepeatTimer(float(config['remove_tmp']['every_x_seconds']), delete_old_records)
+remove_tmp.start()
+
+
+# TODO just testing purposes
+@app.route('/file_manager')
+def file_manager_func():
+    return '<br>'.join(file_manager.values())
+
+
+# TODO just testing purposes
+@app.route('/user_id_manager')
+def user_id_manager_func():
+    return '<br>'.join(user_id_manager[request.remote_addr])
 
 
 if __name__ == '__main__':
