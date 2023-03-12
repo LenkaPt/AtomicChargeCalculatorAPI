@@ -18,10 +18,11 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 import configparser
 import pathlib
-import shutil
 import logging
 from logging.handlers import QueueHandler
 from abc import ABC, abstractmethod
+import heapq
+from queue import PriorityQueue
 
 config = configparser.ConfigParser()
 config.read('api.ini')
@@ -121,7 +122,7 @@ class OKResponse(Response):
     def __init__(self, status_code: int = 200, message: str = 'OK'):
         super().__init__(status_code, message)
 
-    def get_response(self, data):
+    def get_response(self, data: Any):
         return jsonify({'status_code': self._status_code,
                         'message': self._message,
                         **data})
@@ -183,19 +184,82 @@ class LevelFilter(logging.Filter):
         return logRecord.levelno == self.__level
 
 
-def setup_logger(name, log_file, level):
-    formatter = logging.Formatter(f'%(asctime)s'
-                                  f'%(process)d, '
-                                  f'%(message)s')
-    handler = logging.FileHandler(log_file)
-    handler.setFormatter(formatter)
+class Logger:
+    def __init__(self, type, level, queue=None):
+        if type == 'error':
+            self._logger = self.get_error_logger(level=level)
+        elif type == 'statistics':
+            self._logger = self.get_statistics_logger(level=level)
+        elif type == 'simple':
+            self._logger = self.get_simple_logger(queue)
+        else:
+            raise ValueError('Wrong type of logger')
 
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-    logger.addHandler(handler)
-    logger.addFilter(LevelFilter(level))
+    def setup_logger(self, name, log_file, level):
+        formatter = logging.Formatter(f'%(asctime)s'
+                                      f'%(process)d, '
+                                      f'%(message)s')
+        handler = logging.FileHandler(log_file)
+        handler.setFormatter(formatter)
 
-    return logger
+        logger = logging.getLogger(name)
+        logger.setLevel(level)
+        logger.addHandler(handler)
+        logger.addFilter(LevelFilter(level))
+
+        return logger
+
+    def get_error_logger(self, file=(config['paths']['log_error']), level=logging.ERROR):
+        return self.setup_logger('error_logger', file, level)
+
+    def get_statistics_logger(self, file=(config['paths']['save_statistics_file']), level=logging.INFO):
+        return self.setup_logger('collect_statistics_logger', file, level)
+
+    def get_simple_logger(self, queue):
+        logger = logging.getLogger('api')
+        # add a handler that uses the shared queue
+        logger.addHandler(QueueHandler(queue))
+        logger.setLevel(logging.INFO)
+        return logger
+
+    def log_statistics_message(self, remote_add, endpoint_name, **kwargs):
+        result_message = []
+        result_message.append(f'{remote_add}')
+        result_message.append(f'endpoint_name={endpoint_name}')
+        if kwargs:
+            for key, value in kwargs.items():
+                result_message.append(f'{key}={value}')
+        message = ', '.join(result_message)
+        self._logger.info(message)
+
+    def log_error_message(self, remote_add, endpoint_name, error_message, **kwargs):
+        result_message = []
+        result_message.append(f'{remote_add}')
+        result_message.append(f'endpoint_name={endpoint_name}')
+        result_message.append(f'error_message={error_message}')
+        if kwargs:
+            for key, value in kwargs.items():
+                result_message.append(f'{key}={value}')
+        message = ', '.join(result_message)
+        self._logger.error(message)
+
+    def handle(self, message):
+        self._logger.handle(message)
+
+
+# def setup_logger(name, log_file, level):
+#     formatter = logging.Formatter(f'%(asctime)s'
+#                                   f'%(process)d, '
+#                                   f'%(message)s')
+#     handler = logging.FileHandler(log_file)
+#     handler.setFormatter(formatter)
+#
+#     logger = logging.getLogger(name)
+#     logger.setLevel(level)
+#     logger.addHandler(handler)
+#     logger.addFilter(LevelFilter(level))
+#
+#     return logger
 
 
 # def debug(msg):
@@ -204,65 +268,67 @@ def setup_logger(name, log_file, level):
 #                      f'{time.strftime("%H:%M:%S", time.localtime())}, '
 #                      f'{msg}\n')
 
-def get_error_logger():
-    return setup_logger('error_logger', config['paths']['log_error'], level=logging.ERROR)
-
-
-def get_statistics_logger():
-    return setup_logger('collect_statistics_logger', config['paths']['save_statistics_file'], level=logging.INFO)
+# def get_error_logger():
+#     return setup_logger('error_logger', config['paths']['log_error'], level=logging.ERROR)
+#
+# def get_statistics_logger():
+#     return setup_logger('collect_statistics_logger', config['paths']['save_statistics_file'], level=logging.INFO)
 
 
 def logging_process(queue):
-    error_logger = get_error_logger()
-    stat_logger = get_statistics_logger()
+    # error_logger = get_error_logger()
+    # stat_logger = get_statistics_logger()
+    error_logger = Logger('error', level=logging.ERROR)
+    stat_logger = Logger('statistics', level=logging.INFO)
     for message in iter(queue.get, None):
         error_logger.handle(message)
         stat_logger.handle(message)
-        # print(queue.qsize())
+        print(queue.qsize())
 
 
 manager = Manager()
 queue = manager.Queue()
 log_process = Process(target=lambda: logging_process(queue))
 log_process.start()
+simple_logger = Logger('simple', logging.INFO, queue)
 
 
-def log_statistics_message(remote_add, endpoint_name, **kwargs):
-    result_message = []
-    result_message.append(f'{remote_add}')
-    result_message.append(f'endpoint_name={endpoint_name}')
-    if kwargs:
-        for key, value in kwargs.items():
-            result_message.append(f'{key}={value}')
-    return ', '.join(result_message)
+# def log_statistics_message(remote_add, endpoint_name, **kwargs):
+#         result_message = []
+#         result_message.append(f'{remote_add}')
+#         result_message.append(f'endpoint_name={endpoint_name}')
+#         if kwargs:
+#             for key, value in kwargs.items():
+#                 result_message.append(f'{key}={value}')
+#         return ', '.join(result_message)
+#
+#
+# def log_error_message(remote_add, endpoint_name, error_message, **kwargs):
+#     result_message = []
+#     result_message.append(f'{remote_add}')
+#     result_message.append(f'endpoint_name={endpoint_name}')
+#     result_message.append(f'error_message={error_message}')
+#     if kwargs:
+#         for key, value in kwargs.items():
+#             result_message.append(f'{key}={value}')
+#     return ', '.join(result_message)
 
 
-def log_error_message(remote_add, endpoint_name, error_message, **kwargs):
-    result_message = []
-    result_message.append(f'{remote_add}')
-    result_message.append(f'endpoint_name={endpoint_name}')
-    result_message.append(f'error_message={error_message}')
-    if kwargs:
-        for key, value in kwargs.items():
-            result_message.append(f'{key}={value}')
-    return ', '.join(result_message)
-
-
-def get_api_logger():
-    logger = logging.getLogger('api')
-    # add a handler that uses the shared queue
-    logger.addHandler(QueueHandler(queue))
-    logger.setLevel(logging.INFO)
-
-    return logger
+# def get_api_logger():
+#     logger = logging.getLogger('api')
+#     # add a handler that uses the shared queue
+#     logger.addHandler(QueueHandler(queue))
+#     logger.setLevel(logging.INFO)
+#
+#     return logger
 
 
 @avail_methods.route('')
 class AvailableMethods(Resource):
     def get(self):
         """Returns list of methods available for calculation of partial atomic charges"""
-        logger = get_api_logger()
-        logger.info(log_statistics_message(request.remote_addr, endpoint_name='available_methods'))
+        # logger.info(log_statistics_message(request.remote_addr, endpoint_name='available_methods'))
+        simple_logger.log_statistics_message(request.remote_addr, endpoint_name='available_methods')
         return OKResponse().get_response({'available_methods': chargefw2_python.get_available_methods()})
 
 
@@ -274,22 +340,25 @@ class AvailableMethods(Resource):
 class AvailableParameters(Resource):
     def get(self):
         """Returns list of available parameters for specific method"""
-        logger = get_api_logger()
         method = request.args.get('method')
         if not method:
-            logger.error(log_error_message(request.remote_addr,
-                                           'available_parameters',
-                                           'User did not specify method'))
+            simple_logger.log_error_message(request.remote_addr,
+                                            'available_parameters',
+                                            'User did not specify method')
             return ErrorResponse(f'You have not specified method. '
                                  f'Add to URL following, please: ?method=your_chosen_method').get_response()
 
         if method not in chargefw2_python.get_available_methods():
-            logger.error(log_error_message(request.remote_addr,
-                                           'available_parameters',
-                                           f'User wanted to use method {method} that is not available'))
+            # logger.error(log_error_message(request.remote_addr,
+            #                                'available_parameters',
+            #                                f'User wanted to use method {method} that is not available'))
+            simple_logger.log_error_message(request.remote_addr,
+                                            'available_parameters',
+                                            f'User wanted to use method {method} that is not available')
             return ErrorResponse(f'Method {method} is not available.', status_code=400).get_response()
 
-        logger.info(log_statistics_message(request.remote_addr, endpoint_name='available_parameters', method=method))
+        # logger.info(log_statistics_message(request.remote_addr, endpoint_name='available_parameters', method=method))
+        simple_logger.log_statistics_message(request.remote_addr, endpoint_name='available_parameters', method=method)
         return OKResponse().get_response({'parameters': chargefw2_python.get_available_parameters(method)})
 
 
@@ -332,19 +401,21 @@ class SendFiles(Resource):
     # decorators = [limiter.shared_limit("100/hour", scope="upload")]
     def post(self):
         """Send files in pdb, sdf or cif format"""
-        logger = get_api_logger()
         files = request.files.getlist('file[]')
 
         if not files:
-            logger.error(log_error_message(request.remote_addr,
-                                           'send_files',
-                                           f'User did not send a file'))
+            simple_logger.log_error_message(request.remote_addr,
+                                            'send_files',
+                                            f'User did not send a file')
             return ErrorResponse(f'No file sent. Add to URL following, please: ?file[]=path_to_file').get_response()
 
         if not valid_suffix(files):
-            logger.error(log_error_message(request.remote_addr,
-                                           f'send_files',
-                                           f'User sent file in unsupported format'))
+            # logger.error(log_error_message(request.remote_addr,
+            #                                f'send_files',
+            #                                f'User sent file in unsupported format'))
+            simple_logger.log_error_message(request.remote_addr,
+                                            f'send_files',
+                                            f'User sent file in unsupported format')
             return ErrorResponse(f'Unsupported format. Send only .sdf, .mol2, .cif and .pdb files.',
                                  status_code=400).get_response()
 
@@ -375,9 +446,12 @@ class SendFiles(Resource):
 
         save_file_identifiers(identifiers_plus_filepath)
 
-        logger.info(log_statistics_message(request.remote_addr,
-                                           endpoint_name='send_files',
-                                           number_of_sent_files=len(files)))
+        # logger.info(log_statistics_message(request.remote_addr,
+        #                                    endpoint_name='send_files',
+        #                                    number_of_sent_files=len(files)))
+        simple_logger.log_statistics_message(request.remote_addr,
+                                             endpoint_name='send_files',
+                                             number_of_sent_files=len(files))
 
         if all_uploaded:
             return OKResponse().get_response({'structure_ids': identifiers_plus_filenames})
@@ -416,13 +490,12 @@ class PdbID(Resource):
     # decorators = [limiter.shared_limit("100/hour", scope="upload")]
     def post(self):
         """Specify PDB ID of your structure."""
-        logger = get_api_logger()
         pdb_identifiers = request.args.getlist('pid[]')
 
         if not pdb_identifiers:
-            logger.error(log_error_message(request.remote_addr,
-                                           'pdb_id',
-                                           'User did not specify pdb ID'))
+            simple_logger.log_error_message(request.remote_addr,
+                                            'pdb_id',
+                                            'User did not specify pdb ID')
             return ErrorResponse('No pdb id specified. Add to URL following, please: ?pid[]=pdb_id').get_response()
 
         tmpdir = tempfile.mkdtemp(dir=config['paths']['save_user_files'])
@@ -434,19 +507,23 @@ class PdbID(Resource):
             try:
                 r.raise_for_status()
             except requests.exceptions.HTTPError as e:
-                logger.error(log_error_message(request.remote_addr,
-                                               'pdb_id',
-                                               f'{e}',
-                                               status_code=r.status_code))
+                # logger.error(log_error_message(request.remote_addr,
+                #                                'pdb_id',
+                #                                f'{e}',
+                #                                status_code=r.status_code))
+                simple_logger.log_error_message(request.remote_addr,
+                                                'pdb_id',
+                                                f'{e}',
+                                                status_code=r.status_code)
                 return ErrorResponse(f'{e}', r.status_code).get_response()
 
             # save requested pdb structure
             path_to_file = os.path.join(tmpdir, pdb_id + '.cif')
             successfully_written_file = write_file(path_to_file, r)
             if not successfully_written_file:
-                logger.error(log_error_message(request.remote_addr,
-                                               'pdb_id',
-                                               'User wanted to upload file bigger than 10 Mb'))
+                simple_logger.log_error_message(request.remote_addr,
+                                                'pdb_id',
+                                                'User wanted to upload file bigger than 10 Mb')
                 return ErrorResponse(f'Not possible to upload {pdb_id}. It is bigger than 10 Mb.', 400).get_response()
 
             # user has limited space
@@ -464,9 +541,9 @@ class PdbID(Resource):
 
         save_file_identifiers(identifiers_plus_filepath)
 
-        logger.info(log_statistics_message(request.remote_addr,
-                                           endpoint_name='pdb_id',
-                                           number_of_requested_structures=len(pdb_identifiers)))
+        simple_logger.log_statistics_message(request.remote_addr,
+                                             endpoint_name='pdb_id',
+                                             number_of_requested_structures=len(pdb_identifiers))
 
         if all_uploaded:
             return OKResponse().get_response({'structure_ids': identifiers_plus_filename})
@@ -493,13 +570,12 @@ class PubchemCID(Resource):
     # decorators = [limiter.shared_limit("100/hour", scope="upload")]
     def post(self):
         """Specify Pubchem CID of your structure."""
-        logger = get_api_logger()
         cid_identifiers = request.args.getlist('cid[]')
 
         if not cid_identifiers:
-            logger.error(log_error_message(request.remote_addr,
-                                           'pubchem_id',
-                                           'User did not specify pubchem cid'))
+            simple_logger.log_error_message(request.remote_addr,
+                                            'pubchem_id',
+                                            'User did not specify pubchem cid')
             return ErrorResponse(
                 'No pubchem cid specified. Add to URL following, please: ?cid[]=pubchem_cid').get_response()
 
@@ -515,19 +591,19 @@ class PubchemCID(Resource):
             try:
                 r.raise_for_status()
             except requests.exceptions.HTTPError as e:
-                logger.error(log_error_message(request.remote_addr,
-                                               'pubchem_cid',
-                                               f'{e}',
-                                               status_code=r.status_code))
+                simple_logger.log_error_message(request.remote_addr,
+                                                'pubchem_cid',
+                                                f'{e}',
+                                                status_code=r.status_code)
                 return ErrorResponse(f'{e}', r.status_code).get_response()
 
             # save requested cid compound
             path_to_file = os.path.join(tmpdir, cid + '.sdf')
             successfully_written_file = write_file(path_to_file, r)
             if not successfully_written_file:
-                logger.error(log_error_message(request.remote_addr,
-                                               'cid',
-                                               'User wanted to upload file bigger than 10 Mb'))
+                simple_logger.log_error_message(request.remote_addr,
+                                                'cid',
+                                                'User wanted to upload file bigger than 10 Mb')
                 return ErrorResponse(f'Not possible to upload {cid}. It is bigger than 10 Mb.', 400).get_response()
 
             # user has limited space
@@ -545,9 +621,9 @@ class PubchemCID(Resource):
 
         save_file_identifiers(identifiers_plus_filepath)
 
-        logger.info(log_statistics_message(request.remote_addr,
-                                           endpoint_name='pubchem_cid',
-                                           number_of_requested_structures=len(cid_identifiers)))
+        simple_logger.log_statistics_message(request.remote_addr,
+                                             endpoint_name='pubchem_cid',
+                                             number_of_requested_structures=len(cid_identifiers))
 
         if all_uploaded:
             return OKResponse().get_response({'structure_ids': identifiers_plus_filenames})
@@ -575,22 +651,27 @@ remove_file_parser.add_argument('structure_id',
 class RemoveFile(Resource):
     def post(self):
         """Remove file specified by structure_id"""
-        logger = get_api_logger()
         structure_id = request.args.get('structure_id')
-        # TODO - kontrolovat, jestli to id je uživatelovo - až budu mít udělaný ten slovník {user:[id1, id2]}
         if not structure_id:
-            logger.error(log_error_message(request.remote_addr,
-                                           'remove_file',
-                                           'User did not specify structure id'))
+            simple_logger.log_error_message(request.remote_addr,
+                                            'remove_file',
+                                            'User did not specify structure id')
             return ErrorResponse(f'You have not specified structure ID obtained after uploading your file. '
                                  f'Add to URL following, please: ?structure_id=obtained_structure_id').get_response()
         path_to_file = get_path_based_on_identifier(structure_id)
         if not path_to_file:
-            logger.error(log_error_message(request.remote_addr,
-                                           'remove_file',
-                                           'User specified id that does not exist',
-                                           structure_id=structure_id))
+            simple_logger.log_error_message(request.remote_addr,
+                                            'remove_file',
+                                            'User specified id that does not exist',
+                                            structure_id=structure_id)
             return ErrorResponse(f'Structure ID {structure_id} does not exist.', 400).get_response()
+
+        if structure_id not in user_id_manager[request.remote_addr]:
+            simple_logger.log_error_message(request.remote_addr,
+                                            'remove_file',
+                                            'User wanted to remove file that is not his.')
+            return ErrorResponse(
+                f'You are not allowed to remove {structure_id}. It is not your structure.').get_response()
 
         # remove from file_manager and user_id_manager
         del file_manager[structure_id]
@@ -607,6 +688,9 @@ class RemoveFile(Resource):
 
         os.remove(path_to_file)
         path_to_file.parent.rmdir()
+        simple_logger.log_statistics_message(request.remote_addr,
+                                             'remove_file',
+                                             f'structure {structure_id} successfully removed from system by user: {request.remote_addr}')
         return OKResponse().get_response({structure_id: 'removed'})
 
 
@@ -681,12 +765,11 @@ class AddHydrogens(Resource):
     def post(self):
         """WIP: Might not work as expected - works just for structures in .pdb format!
         Add hydrogens to your structure represented by an structure identifier"""
-        logger = get_api_logger()
         structure_id = request.args.get('structure_id')
         if not structure_id:
-            logger.error(log_error_message(request.remote_addr,
-                                           'add_hydrogens',
-                                           'User did not specify structure id'))
+            simple_logger.log_error_message(request.remote_addr,
+                                            'add_hydrogens',
+                                            'User did not specify structure id')
             return ErrorResponse(f'You have not specified structure ID obtained after uploading your file. '
                                  f'Add to URL following, please: ?structure_id=obtained_structure_id').get_response()
 
@@ -697,9 +780,9 @@ class AddHydrogens(Resource):
         try:
             input_file = get_pdb_input_file(structure_id)
         except ValueError as e:
-            logger.error(log_error_message(request.remote_addr,
-                                           'add_hydrogens',
-                                           f'{str(e)}'))
+            simple_logger.log_error_message(request.remote_addr,
+                                            'add_hydrogens',
+                                            f'{str(e)}')
             return ErrorResponse(f'{str(e)}', status_code=400).get_response()
         output_pqr_file = os.path.join(tempfile.mkdtemp(dir=config['paths']['save_user_files']), 'result.pqr')
         output_pdb_file = output_pqr_file[:-4] + '.pdb'
@@ -712,20 +795,20 @@ class AddHydrogens(Resource):
                 subprocess.run(['pdb2pqr30', f'--noopt', f'--pH', f'{ph}', f'{input_file}', f'{output_pqr_file}'],
                                check=True)
             except subprocess.CalledProcessError as e:
-                logger.error(log_error_message(request.remote_addr,
-                                               'add_hydrogens',
-                                               'Error occurred when using pdb2pqr30',
-                                               structure_id=structure_id))
+                simple_logger.log_error_message(request.remote_addr,
+                                                'add_hydrogens',
+                                                'Error occurred when using pdb2pqr30',
+                                                structure_id=structure_id)
                 return ErrorResponse(f'Error occurred when using pdb2pqr30 on structure {structure_id}',
                                      status_code=405).get_response()
         else:
             try:
                 subprocess.run(['pdb2pqr30', f'--pH', f'{ph}', f'{input_file}', f'{output_pqr_file}'], check=True)
             except subprocess.CalledProcessError as e:
-                logger.error(log_error_message(request.remote_addr,
-                                               'add_hydrogens',
-                                               'Error occurred when using pdb2pqr30',
-                                               structure_id=structure_id))
+                simple_logger.log_error_message(request.remote_addr,
+                                                'add_hydrogens',
+                                                'Error occurred when using pdb2pqr30',
+                                                structure_id=structure_id)
                 return ErrorResponse(f'Error occurred when using pdb2pqr30 on structure {structure_id}',
                                      status_code=405).get_response()
 
@@ -733,16 +816,16 @@ class AddHydrogens(Resource):
         try:
             convert_pqr_to_pdb(output_pqr_file, output_pdb_file)
         except ValueError as e:
-            logger.error(log_error_message(request.remote_addr,
-                                           'add_hydrogens',
-                                           f'{str(e)}'))
+            simple_logger.log_error_message(request.remote_addr,
+                                            'add_hydrogens',
+                                            f'{str(e)}')
             return ErrorResponse(f'{str(e)}', status_code=405).get_response()
         save_file_identifiers({output_identifier: output_pdb_file})
 
-        logger.info(log_statistics_message(request.remote_addr,
-                                           endpoint_name='add_hydrogens',
-                                           ph=ph,
-                                           noopt=noopt))
+        simple_logger.log_statistics_message(request.remote_addr,
+                                             endpoint_name='add_hydrogens',
+                                             ph=ph,
+                                             noopt=noopt)
         return OKResponse().get_response({'structure_id': output_identifier})
 
 
@@ -796,14 +879,13 @@ info_parser.add_argument('ignore_water',
 class GetInfo(Resource):
     def get(self):
         """Get info about your molecule."""
-        logger = get_api_logger()
         structure_id = request.args.get('structure_id')
         read_hetatm = request.args.get('read_hetatm')
         ignore_water = request.args.get('ignore_water')
         if not structure_id:
-            logger.error(log_error_message(request.remote_addr,
-                                           'get_info',
-                                           'User did not specify structure id'))
+            simple_logger.log_error_message(request.remote_addr,
+                                            'get_info',
+                                            'User did not specify structure id')
             return ErrorResponse(f'You have not specified structure ID obtained after uploading your file. '
                                  f'Add to URL following, please: ?structure_id=obtained_structure_id').get_response()
 
@@ -813,19 +895,19 @@ class GetInfo(Resource):
         try:
             molecules = get_molecules(structure_id, read_hetatm, ignore_water)
         except ValueError as e:
-            logger.error(log_error_message(request.remote_addr,
-                                           'get_info',
-                                           f'{str(e)}'))
+            simple_logger.log_error_message(request.remote_addr,
+                                            'get_info',
+                                            f'{str(e)}')
             return ErrorResponse(str(e), status_code=400).get_response()
 
         molecules_count, atom_count, atoms_list_count = chargefw2_python.get_info(molecules)
         atoms_dict_count = get_dict_atoms_count(atoms_list_count)
 
-        logger.info(log_statistics_message(request.remote_addr,
-                                           endpoint_name='get_info',
-                                           number_of_molecules=molecules_count,
-                                           number_of_atoms=atom_count,
-                                           number_of_individdual_atoms=atoms_dict_count))
+        simple_logger.log_statistics_message(request.remote_addr,
+                                             endpoint_name='get_info',
+                                             number_of_molecules=molecules_count,
+                                             number_of_atoms=atom_count,
+                                             number_of_individdual_atoms=atoms_dict_count)
 
         return OKResponse().get_response({'Number of molecules': molecules_count,
                                           'Number of atoms': atom_count,
@@ -872,14 +954,13 @@ suit_parser.add_argument('ignore_water',
 class SuitableMethods(Resource):
     def get(self):
         """Get calculation methods suitable for your molecule."""
-        logger = get_api_logger()
         structure_id = request.args.get('structure_id')
         read_hetatm = request.args.get('read_hetatm')
         ignore_water = request.args.get('ignore_water')
         if not structure_id:
-            logger.error(log_error_message(request.remote_addr,
-                                           'suitable_methods',
-                                           'User did not specify structure id'))
+            simple_logger.log_error_message(request.remote_addr,
+                                            'suitable_methods',
+                                            'User did not specify structure id')
             return ErrorResponse(f'You have not specified structure ID obtained after uploading your file. '
                                  f'Add to URL following, please: ?structure_id=obtained_structure_id').get_response()
 
@@ -890,16 +971,78 @@ class SuitableMethods(Resource):
             suitable_methods = get_suitable_methods(structure_id, read_hetatm, ignore_water)
             suitable_methods = empty_brackets_to_null(suitable_methods)
         except ValueError as e:
-            logger.error(log_error_message(request.remote_addr,
-                                           'suitable_methods',
-                                           f'{str(e)}'))
+            simple_logger.log_error_message(request.remote_addr,
+                                            'suitable_methods',
+                                            f'{str(e)}')
             return ErrorResponse(str(e), status_code=400).get_response()
 
-        logger.info(log_statistics_message(request.remote_addr,
-                                           endpoint_name='suitable_methods',
-                                           suitable_methods=suitable_methods))
+        simple_logger.log_statistics_message(request.remote_addr,
+                                             endpoint_name='suitable_methods',
+                                             suitable_methods=suitable_methods)
 
         return OKResponse().get_response({'suitable_methods': suitable_methods})
+
+
+class CalculationTask:
+    def __init__(self, calculation_id, user_id, molecules, method, parameters):
+        self._calculation_id = calculation_id
+        self._user_id = user_id
+        self._molecules = molecules
+        self._method = method
+        self._parameters = parameters
+
+    @property
+    def calculation_id(self):
+        return self._calculation_id
+
+    @property
+    def user_id(self):
+        return self._user_id
+
+    def get_molecules(self):
+        return self._molecules
+
+    def get_method(self):
+        return self._method
+
+    def get_parameters(self):
+        return self._parameters
+
+
+# class PriorityQueue:
+#     def __init__(self, heap):
+#         self._heap = heap
+#         self._index = 0
+#         self._user_counts = {}
+#
+#     def push(self, task):
+#         print('need to push a task')
+#         heapq.heappush(self._heap, (self._user_counts.get(task.user_id, 0), self._index, task))
+#         self._index += 1
+#         self._user_counts[task.user_id] = self._user_counts.get(task.user_id, 0) + 1
+#         print('task pushed - hepa', len(self._heap))
+#
+#     def pop(self):
+#         print('heap', len(self._heap))
+#         task = heapq.heappop(self._heap)[-1]
+#         print(task)
+#         self._user_counts[task.user_id] -= 1
+#         if self._user_counts[task.user_id] == 0:
+#             del self._user_counts[task.user_id]
+#         return task
+#
+#     def is_empty(self):
+#         return len(self._heap) == 0
+
+class ModPriorityQueue(PriorityQueue):
+    def __lt__(self, other):
+        return self.priority < other.priority
+
+    def __gt__(self, other):
+        return print(self) > other.priority
+
+
+priority_queue = PriorityQueue()
 
 
 @calculate_time
@@ -962,9 +1105,9 @@ def calc_charges(molecules, method, parameters, calculation_id):
     #     # print(f'Done - charges: {result_of_calculation.get_charges()}')
     #     calc_results[calculation_id] = result_of_calculation
     result_of_calculation = CalculationResult(round(calc_end - calc_start, 2), rounded_charges, method, parameters)
-    calc_results[calculation_id] = {'charges': result_of_calculation.get_charges(),
-                                    'method': result_of_calculation.method,
-                                    'parameters': result_of_calculation.parameters}
+    # calc_results[calculation_id] = {'charges': result_of_calculation.get_charges(),
+    #                                 'method': result_of_calculation.method,
+    #                                 'parameters': result_of_calculation.parameters}
     return result_of_calculation
 
 
@@ -1003,7 +1146,6 @@ calc_parser.add_argument('ignore_water',
 class CalculateCharges(Resource):
     @calculate_time
     def get(self):
-        logger = get_api_logger()
         structure_id = request.args.get('structure_id')
         method = request.args.get('method')
         parameters = request.args.get('parameters')
@@ -1015,39 +1157,39 @@ class CalculateCharges(Resource):
         ignore_water = get_ignore_water_value(ignore_water)  # default False
 
         if not structure_id:
-            logger.error(log_error_message(request.remote_addr,
-                                           'calculate_charges',
-                                           'User did not specify structure id'))
+            simple_logger.log_error_message(request.remote_addr,
+                                            'calculate_charges',
+                                            'User did not specify structure id')
             return ErrorResponse(f'You have not specified structure ID obtained after uploading your file. '
                                  f'Add to URL following, please: ?structure_id=obtained_structure_id').get_response()
 
         try:
             molecules = get_molecules(structure_id, read_hetatm, ignore_water)
         except ValueError as e:
-            logger.error(log_error_message(request.remote_addr, 'calculate_charges', str(e)))
+            simple_logger.log_error_message(request.remote_addr, 'calculate_charges', str(e))
             return ErrorResponse(str(e), 400).get_response()
 
         if method and method not in chargefw2_python.get_available_methods():
-            logger.error(log_error_message(request.remote_addr,
-                                           'calculate_charges',
-                                           'User wanted to use method that is not available',
-                                           method=method))
+            simple_logger.log_error_message(request.remote_addr,
+                                            'calculate_charges',
+                                            'User wanted to use method that is not available',
+                                            method=method)
             return ErrorResponse(f'Method {method} is not available.', status_code=400).get_response()
 
         # wrong or not compatible parameters
         # TODO - asi mozno odstranit a odchytavat chybu?????? - asi ne, mohu zadat metodu nevyzadujici parametr + spatny param - projde
         if method and parameters:
             if parameters not in chargefw2_python.get_available_parameters(method):
-                logger.error(log_error_message(request.remote_addr,
-                                               'calculate_charges',
-                                               f'Parameters {parameters} are not available for method {method}'))
+                simple_logger.log_error_message(request.remote_addr,
+                                                'calculate_charges',
+                                                f'Parameters {parameters} are not available for method {method}')
                 return ErrorResponse(f'Parameters {parameters} are not available for method {method}.',
                                      status_code=400).get_response()
 
         if not method:
-            logger.error(log_error_message(request.remote_addr,
-                                           'calculate_charges',
-                                           'User did not specify calculation method'))
+            simple_logger.log_error_message(request.remote_addr,
+                                            'calculate_charges',
+                                            'User did not specify calculation method')
             return ErrorResponse(f'You have not specified calculation method. '
                                  f'Add to URL following, please: ?method=your_chosen_method').get_response()
 
@@ -1055,9 +1197,9 @@ class CalculateCharges(Resource):
         if config['limits']['on'] == 'True':
             if request.remote_addr in long_calculations and long_calculations[request.remote_addr] >= int(
                     config['limits']['max_long_calc']):
-                logger.error(log_error_message(request.remote_addr,
-                                               'calculate_charges',
-                                               'User has too many time demanding calculations per day'))
+                simple_logger.log_error_message(request.remote_addr,
+                                                'calculate_charges',
+                                                'User has too many time demanding calculations per day')
                 return ErrorResponse(
                     f'You can perform only {config["limits"]["max_long_calc"]} time demanding calculations per day.').get_response()
 
@@ -1065,15 +1207,21 @@ class CalculateCharges(Resource):
         calc_results[calculation_id] = None
         Thread(target=calc_charges, args=(molecules, method, parameters, calculation_id)).start()
 
+        print('before push')
+        # push task for calculation to priority_queue
+        task = CalculationTask(calculation_id, request.remote_addr, molecules, method, parameters)
+        priority_queue.put(task)
+        print('task pushed', task)
+
         suffix = get_path_based_on_identifier(structure_id)[-3:]
         molecules_count, atom_count, atoms_list_count = chargefw2_python.get_info(molecules)
-        logger.info(log_statistics_message(request.remote_addr,
-                                           endpoint_name='calculate_charges',
-                                           suffix=suffix,
-                                           number_of_molecules=molecules_count,
-                                           number_of_atoms=atom_count,
-                                           method=method,
-                                           parameters=parameters))
+        simple_logger.log_statistics_message(request.remote_addr,
+                                             endpoint_name='calculate_charges',
+                                             suffix=suffix,
+                                             number_of_molecules=molecules_count,
+                                             number_of_atoms=atom_count,
+                                             method=method,
+                                             parameters=parameters)
         return OKResponse().get_response({'calculation_id': calculation_id})
         #     try:
         #         calculation_response = calc_charges(molecules, method, parameters, calculation_id)
@@ -1115,6 +1263,24 @@ class CalculateCharges(Resource):
         # # return OKResponse().get_response({'charges': charges, 'method': method, 'parameters': parameters})
 
 
+def calculation_process():
+    print('Before popping')
+    for calc_task in iter(priority_queue.get, None):
+        print('I have a task')
+        # try:
+        result = calc_charges(calc_task.get_molecules(), calc_task.get_method, calc_task.get_parameters,
+                              calc_task.calculation_id)
+        calc_results[calculation_id] = {'charges': result.get_charges(),
+                                        'method': result.method,
+                                        'parameters': result.parameters}
+        # except RuntimeError as e:
+        #     calc_results[calculation_id] = e
+
+
+process_running_calculations = Process(target=calculation_process)
+# process_running_calculations.start()
+
+
 get_calc_results_parser = reqparse.RequestParser()
 get_calc_results_parser.add_argument('calculation_id',
                                      type=str,
@@ -1133,6 +1299,7 @@ class GetCalculationResults(Resource):
         if not calc_id in calc_results:
             return ErrorResponse('Calculation ID does not exist.').get_response()
         if not calc_results[calc_id]:
+            # print(calc_results[calc_id])
             return ErrorResponse(f'The calculation has not yet been completed.').get_response()
 
         charges = calc_results[calc_id]['charges']
@@ -1253,25 +1420,6 @@ def delete_old_records():
 # Remove file manager and tmp files repeatedly
 remove_tmp = RepeatTimer(float(config['remove_tmp']['every_x_seconds']), delete_old_records)
 remove_tmp.start()
-
-
-# TODO just testing purposes
-@app.route('/file_manager')
-def file_manager_func():
-    return '<br>'.join(file_manager.values())
-
-
-# TODO just testing purposes
-@app.route('/user_id_manager')
-def user_id_manager_func():
-    return '<br>'.join(user_id_manager[request.remote_addr])
-
-
-# TODO just testing purposes
-@app.route('/w')
-def w():
-    return 'change working'
-
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0')
