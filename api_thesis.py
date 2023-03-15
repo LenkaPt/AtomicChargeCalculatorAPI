@@ -2,8 +2,7 @@ from flask import Flask, render_template, request, send_from_directory, jsonify
 from flask_restx import Api, Resource, reqparse
 from werkzeug.datastructures import FileStorage
 from typing import Dict, TextIO, Any, Union, List, Tuple
-from multiprocessing import Process, Manager, Queue
-from multiprocessing.managers import BaseManager
+from multiprocessing import Process, Manager
 import tempfile
 import os
 import csv
@@ -15,13 +14,11 @@ import time
 from datetime import date
 from threading import Timer, Thread
 from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
 import configparser
 import pathlib
 import logging
 from logging.handlers import QueueHandler
 from abc import ABC, abstractmethod
-import heapq
 from queue import PriorityQueue
 
 config = configparser.ConfigParser()
@@ -147,7 +144,6 @@ class Structure:
         self._structure_id = structure_id
 
     def get_structure_file(self):
-        # TODO rename to get_structure_file()
         if self._structure_id in file_manager:
             return file_manager[self._structure_id]
         return None
@@ -161,10 +157,19 @@ class Structure:
         except RuntimeError as e:
             raise ValueError(e)
 
+    def format_methods(self, methods):
+        result_format = []
+        for item in methods:
+            params = item[1]
+            if not params:
+                params = None
+            result_format.append({'method': item[0], 'parameters': params})
+        return result_format
+
     def get_suitable_methods(self, read_hetatm: bool, ignore_water: bool):
         """Returns suitable methods for particular dataset"""
         molecules = self.get_molecules(read_hetatm, ignore_water)
-        return chargefw2_python.get_suitable_methods(molecules)
+        return self.format_methods(chargefw2_python.get_suitable_methods(molecules))
 
     def get_pdb_input_file(self) -> str:
         """Returns input file in pdb format (pdb2pqr can process only pdb files)"""
@@ -297,7 +302,7 @@ simple_logger = Logger('simple', logging.INFO, queue)
 
 
 @avail_methods.route('')
-class AvailableMethods(Resource):
+class AvailableMethodsEndpoint(Resource):
     def get(self):
         """Returns list of methods available for calculation of partial atomic charges"""
         simple_logger.log_statistics_message(request.remote_addr, endpoint_name='available_methods')
@@ -309,7 +314,7 @@ class AvailableMethods(Resource):
          responses={404: 'Method not specified',
                     400: 'Method not available',
                     200: 'OK'})
-class AvailableParameters(Resource):
+class AvailableParametersEndpoint(Resource):
     def get(self):
         """Returns list of available parameters for specific method"""
         method = request.args.get('method')
@@ -328,6 +333,7 @@ class AvailableParameters(Resource):
 
         simple_logger.log_statistics_message(request.remote_addr, endpoint_name='available_parameters', method=method)
         return OKResponse({'parameters': chargefw2_python.get_available_parameters(method)}).json
+
 
 def valid_suffix(files: TextIO) -> bool:
     for file in files:
@@ -356,7 +362,7 @@ file_parser.add_argument('file[]', location='files', type=FileStorage, required=
                     413: 'File is too large',
                     200: 'OK'})
 @api.expect(file_parser)
-class SendFiles(Resource):
+class SendFilesEndpoint(Resource):
     # decorators = [limiter.shared_limit("100/hour", scope="upload")]
     def post(self):
         """Send files in pdb, sdf or cif format"""
@@ -832,12 +838,6 @@ class GetInfo(Resource):
                            'Number of individual atoms': atoms_dict_count}).json
 
 
-def empty_brackets_to_null(dict):
-    for key, value in dict.items():
-        if not value:
-            dict[key] = None
-    return dict
-
 
 # parser for query arguments
 suit_parser = reqparse.RequestParser()
@@ -881,7 +881,6 @@ class SuitableMethods(Resource):
         try:
             structure = Structure(structure_id)
             suitable_methods = structure.get_suitable_methods(read_hetatm, ignore_water)
-            suitable_methods = empty_brackets_to_null(suitable_methods)
         except ValueError as e:
             simple_logger.log_error_message(request.remote_addr,
                                             'suitable_methods',
@@ -891,7 +890,6 @@ class SuitableMethods(Resource):
         simple_logger.log_statistics_message(request.remote_addr,
                                              endpoint_name='suitable_methods',
                                              suitable_methods=suitable_methods)
-
         return OKResponse({'suitable_methods': suitable_methods}).json
 
 
@@ -1162,7 +1160,7 @@ class GetCalculationResults(Resource):
         return OKResponse({'charges': charges, 'method': method, 'parameters': parameters}).json
 
 
-class GetLimits:
+class Limits:
     def __init__(self, user):
         self._user = user
 
@@ -1206,7 +1204,7 @@ class GetLimits:
 @get_limits.route('')
 class GetLimitsEndpoint(Resource):
     def get(self):
-        limits = GetLimits(request.remote_addr)
+        limits = Limits(request.remote_addr)
         return limits.get_limits()
 
 
