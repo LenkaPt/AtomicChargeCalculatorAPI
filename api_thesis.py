@@ -2,7 +2,8 @@ from flask import Flask, render_template, request, send_from_directory, jsonify
 from flask_restx import Api, Resource, reqparse
 from werkzeug.datastructures import FileStorage
 from typing import Dict, TextIO, Any, Union, List, Tuple
-from multiprocessing import Process, Manager
+from multiprocessing import Process, Manager, Queue
+from multiprocessing.managers import BaseManager
 import tempfile
 import os
 import csv
@@ -14,11 +15,13 @@ import time
 from datetime import date
 from threading import Timer, Thread
 from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 import configparser
 import pathlib
 import logging
 from logging.handlers import QueueHandler
 from abc import ABC, abstractmethod
+import heapq
 from queue import PriorityQueue
 
 config = configparser.ConfigParser()
@@ -157,19 +160,35 @@ class Structure:
         except RuntimeError as e:
             raise ValueError(e)
 
+    def get_parameters_without_suffix(self, params):
+        new_params = []
+        for par in params:
+            new_params.append(pathlib.Path(par).stem)
+        return new_params
+
     def format_methods(self, methods):
         result_format = []
         for item in methods:
             params = item[1]
-            if not params:
+            if params:
+                params = self.get_parameters_without_suffix(params)
+            else:
                 params = None
             result_format.append({'method': item[0], 'parameters': params})
         return result_format
 
-    def get_suitable_methods(self, read_hetatm: bool, ignore_water: bool):
+    def get_suitable_methods(self, read_hetatm: bool = True, ignore_water: bool = False):
         """Returns suitable methods for particular dataset"""
         molecules = self.get_molecules(read_hetatm, ignore_water)
         return self.format_methods(chargefw2_python.get_suitable_methods(molecules))
+
+    def is_method_suitable(self, method, suitable_methods=None, read_hetatm: bool = True, ignore_water: bool = False):
+        if not suitable_methods:
+            suitable_methods = self.get_suitable_methods(read_hetatm, ignore_water)
+        for item in suitable_methods:
+            if item['method'] == method:
+                return True
+        return False
 
     def get_pdb_input_file(self) -> str:
         """Returns input file in pdb format (pdb2pqr can process only pdb files)"""
@@ -283,8 +302,6 @@ class Logger:
 
 
 def logging_process(queue):
-    # error_logger = get_error_logger()
-    # stat_logger = get_statistics_logger()
     error_logger = Logger('error', level=logging.ERROR)
     stat_logger = Logger('statistics', level=logging.INFO)
     for message in iter(queue.get, None):
@@ -986,6 +1003,7 @@ def calc_charges(molecules, method, parameters, calculation_id):
 
 priorities = manager.dict()  # {user_id: number_of_calculations_in_queue}
 
+
 calc_parser = reqparse.RequestParser()
 calc_parser.add_argument('structure_id',
                          type=str,
@@ -1040,39 +1058,40 @@ class CalculateCharges(Resource):
 
         try:
             structure = Structure(structure_id)
-            molecules = structure.get_molecules(read_hetatm, ignore_water)
+            suitable_methods = structure.get_suitable_methods(read_hetatm, ignore_water)
         except ValueError as e:
             simple_logger.log_error_message(request.remote_addr, 'calculate_charges', str(e))
             return ErrorResponse(str(e), 400).json
 
-        if not method:
-            simple_logger.log_error_message(request.remote_addr,
-                                            'calculate_charges',
-                                            'User did not specify calculation method')
-            return ErrorResponse(f'You have not specified calculation method. '
-                                 f'Add to URL following, please: ?method=your_chosen_method').json
+        if method:
+            # method is not available
+            if method not in chargefw2_python.get_available_methods():
+                simple_logger.log_error_message(request.remote_addr,
+                                                'calculate_charges',
+                                                'User wanted to use method that is not available',
+                                                method=method)
+                return ErrorResponse(f'Method {method} is not available.', status_code=400).json
 
-        if method and method not in chargefw2_python.get_available_methods():
-            simple_logger.log_error_message(request.remote_addr,
-                                            'calculate_charges',
-                                            'User wanted to use method that is not available',
-                                            method=method)
-            return ErrorResponse(f'Method {method} is not available.', status_code=400).json
-
-        # wrong or not compatible parameters
-        available_parameters_for_method = chargefw2_python.get_available_parameters(method)
-        if available_parameters_for_method and not parameters:
-            simple_logger.log_error_message(request.remote_addr,
-                                            'calculate_charges',
-                                            f'Method {method} requires parameters. None was given.')
-            return ErrorResponse(f'Method {method} requires parameters').json
-        if parameters:
-            if parameters not in available_parameters_for_method:
+            if parameters and parameters not in chargefw2_python.get_available_parameters(method):
                 simple_logger.log_error_message(request.remote_addr,
                                                 'calculate_charges',
                                                 f'Parameters {parameters} are not available for method {method}')
-                return ErrorResponse(f'Parameters {parameters} are not available for method {method}.',
-                                     status_code=400).json
+                return ErrorResponse(f'Parameters {parameters} are not available for method {method}').json
+
+        if not method:
+            method = suitable_methods[0]['method']
+            if not suitable_methods[0]['parameters']:
+                parameters = None
+            else:
+                parameters = suitable_methods[0]['parameters'][0]
+
+        try:
+            molecules = structure.get_molecules(read_hetatm, ignore_water)
+        except ValueError as e:
+            simple_logger.log_error_message(request.remote_addr,
+                                            'calculate_charges',
+                                            str(e))
+            return ErrorResponse(str(e)).json
 
         # try:
         if config['limits']['on'] == 'True':
@@ -1086,15 +1105,14 @@ class CalculateCharges(Resource):
 
         calculation_id = pathlib.Path((tempfile.NamedTemporaryFile(prefix=structure_id).name)).name
         calc_results[calculation_id] = None
-        # Thread(target=calc_charges, args=(molecules, method, parameters, calculation_id)).start()
 
-        print('before push')
-        # push task for calculation to priority_queue
-        priority = priorities.get(request.remote_addr, 0)
-        task = CalculationTask(priority, calculation_id, request.remote_addr, molecules, method, parameters)
-        priorities[request.remote_addr] = priorities.get(request.remote_addr, 0) + 1
-        priority_queue.put(task)
-        print('task pushed', task)
+        try:
+            results = calc_charges(molecules, method, parameters, calculation_id)
+        except RuntimeError as e:
+            simple_logger.log_error_message(request.remote_addr,
+                                            'calculate_charges',
+                                            str(e))
+            return ErrorResponse(str(e)).json
 
         suffix = structure.get_structure_file()[-3:]
         molecules_count, atom_count, atoms_list_count = chargefw2_python.get_info(molecules)
@@ -1105,7 +1123,8 @@ class CalculateCharges(Resource):
                                              number_of_atoms=atom_count,
                                              method=method,
                                              parameters=parameters)
-        return OKResponse({'calculation_id': calculation_id}).json
+        return OKResponse(
+            {'charges': results.get_charges(), 'method': results.method, 'parameters': results.parameters}).json
 
 
 def calculation_process():
