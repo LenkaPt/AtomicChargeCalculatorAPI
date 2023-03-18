@@ -3,29 +3,26 @@ from flask_restx import Api, Resource, reqparse
 from werkzeug.datastructures import FileStorage
 from typing import Dict, TextIO, Any, Union, List, Tuple
 from multiprocessing import Process, Manager, Queue
-from multiprocessing.managers import BaseManager
 import tempfile
 import os
-import csv
-import json
 import chargefw2_python
 import requests
 import subprocess
 import time
 from datetime import date
 from threading import Timer, Thread
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
 import configparser
 import pathlib
 import logging
-from logging.handlers import QueueHandler
-from abc import ABC, abstractmethod
 import heapq
 from queue import PriorityQueue
 
+from Responses import OKResponse, ErrorResponse
+from Structure import Structure
+from Logger import Logger
+
 config = configparser.ConfigParser()
-config.read('api.ini')
+config.read('/home/api_dev/api_dev/utils/api.ini')
 app = Flask(__name__)
 if config['limits']['on'] == 'True':
     app.config['MAX_CONTENT_LENGTH'] = int(config['limits']['file_size'])
@@ -108,105 +105,6 @@ get_limits = api.namespace('get_limits',
                            description='Get info about limits, your files.')
 
 
-class Response(ABC):
-    def __init__(self, status_code: int, message: str):
-        self._status_code = status_code
-        self._message = message
-
-    @abstractmethod
-    def json(self):
-        pass
-
-
-class OKResponse(Response):
-    def __init__(self, data, status_code: int = 200, message: str = 'OK'):
-        super().__init__(status_code, message)
-        self._data = data
-
-    @property
-    def json(self):
-        return jsonify({'status_code': self._status_code,
-                        'message': self._message,
-                        **self._data})
-
-
-class ErrorResponse(Response):
-    def __init__(self, message: str, status_code: int = 404):
-        super().__init__(status_code, message)
-
-    @property
-    def json(self):
-        return {'status_code': self._status_code,
-                'message': self._message}, self._status_code
-
-
-class Structure:
-    def __init__(self, structure_id: str = None):
-        if structure_id not in file_manager:
-            raise ValueError(f'Structure ID {structure_id} does not exists.')
-        self._structure_id = structure_id
-
-    def get_structure_file(self):
-        if self._structure_id in file_manager:
-            return file_manager[self._structure_id]
-        return None
-
-    def get_molecules(self, read_hetatm: bool = True, ignore_water: bool = False):
-        path_to_file = self.get_structure_file()
-        if path_to_file is None:
-            raise ValueError(f'Structure ID {self._structure_id} does not exist.')
-        try:
-            return chargefw2_python.Molecules(path_to_file, read_hetatm, ignore_water)
-        except RuntimeError as e:
-            raise ValueError(e)
-
-    def get_parameters_without_suffix(self, params):
-        new_params = []
-        for par in params:
-            new_params.append(pathlib.Path(par).stem)
-        return new_params
-
-    def format_methods(self, methods):
-        result_format = []
-        for item in methods:
-            params = item[1]
-            if params:
-                params = self.get_parameters_without_suffix(params)
-            else:
-                params = None
-            result_format.append({'method': item[0], 'parameters': params})
-        return result_format
-
-    def get_suitable_methods(self, read_hetatm: bool = True, ignore_water: bool = False):
-        """Returns suitable methods for particular dataset"""
-        molecules = self.get_molecules(read_hetatm, ignore_water)
-        return self.format_methods(chargefw2_python.get_suitable_methods(molecules))
-
-    def is_method_suitable(self, method, suitable_methods=None, read_hetatm: bool = True, ignore_water: bool = False):
-        if not suitable_methods:
-            suitable_methods = self.get_suitable_methods(read_hetatm, ignore_water)
-        for item in suitable_methods:
-            if item['method'] == method:
-                return True
-        return False
-
-    def get_pdb_input_file(self) -> str:
-        """Returns input file in pdb format (pdb2pqr can process only pdb files)"""
-        input_file = self.get_structure_file()
-        if not input_file:
-            raise ValueError(f'Structure ID {self._structure_id} does not exist.')
-        # cif format convert to pdb using gemmi convert
-        if input_file.endswith('.cif'):
-            try:
-                subprocess.run(['gemmi', 'convert', f'{input_file}', f'{input_file[:-4]}.pdb'], check=True)
-            except subprocess.CalledProcessError:
-                raise ValueError(f'Error converting from .cif to .pdb using gemmi convert.')
-            input_file = input_file[:-4] + '.pdb'
-        if not input_file.endswith('pdb'):
-            raise ValueError(f'{self._structure_id} is not in .pdb or .cif format')
-        return input_file
-
-
 def calculate_time(func):
     def inner(*args, **kwargs):
         with open(config['paths']['log_time'], mode='a') as file:
@@ -229,81 +127,9 @@ def calculate_time(func):
     return inner
 
 
-class LevelFilter(logging.Filter):
-    def __init__(self, level):
-        self.__level = level
-
-    def filter(self, logRecord):
-        return logRecord.levelno == self.__level
-
-
-class Logger:
-    def __init__(self, type, level, queue=None):
-        if type == 'error':
-            self._logger = self.get_error_logger(level=level)
-        elif type == 'statistics':
-            self._logger = self.get_statistics_logger(level=level)
-        elif type == 'simple':
-            self._logger = self.get_simple_logger(queue)
-        else:
-            raise ValueError('Wrong type of logger')
-
-    def setup_logger(self, name, log_file, level):
-        formatter = logging.Formatter(f'%(asctime)s'
-                                      f'%(process)d, '
-                                      f'%(message)s')
-        handler = logging.FileHandler(log_file)
-        handler.setFormatter(formatter)
-
-        logger = logging.getLogger(name)
-        logger.setLevel(level)
-        logger.addHandler(handler)
-        logger.addFilter(LevelFilter(level))
-
-        return logger
-
-    def get_error_logger(self, file=(config['paths']['log_error']), level=logging.ERROR):
-        return self.setup_logger('error_logger', file, level)
-
-    def get_statistics_logger(self, file=(config['paths']['save_statistics_file']), level=logging.INFO):
-        return self.setup_logger('collect_statistics_logger', file, level)
-
-    def get_simple_logger(self, queue):
-        logger = logging.getLogger('api')
-        # add a handler that uses the shared queue
-        logger.addHandler(QueueHandler(queue))
-        logger.setLevel(logging.INFO)
-        return logger
-
-    def log_statistics_message(self, remote_add, endpoint_name, **kwargs):
-        result_message = []
-        result_message.append(f'{remote_add}')
-        result_message.append(f'endpoint_name={endpoint_name}')
-        if kwargs:
-            for key, value in kwargs.items():
-                result_message.append(f'{key}={value}')
-        message = ', '.join(result_message)
-        self._logger.info(message)
-
-    def log_error_message(self, remote_add, endpoint_name, error_message, **kwargs):
-        result_message = []
-        result_message.append(f'{remote_add}')
-        result_message.append(f'endpoint_name={endpoint_name}')
-        result_message.append(f'error_message={error_message}')
-        if kwargs:
-            for key, value in kwargs.items():
-                result_message.append(f'{key}={value}')
-        message = ', '.join(result_message)
-        self._logger.error(message)
-
-    def handle(self, message):
-        self._logger.handle(message)
-
-
-
 def logging_process(queue):
-    error_logger = Logger('error', level=logging.ERROR)
-    stat_logger = Logger('statistics', level=logging.INFO)
+    error_logger = Logger('error', file=config['paths']['log_error'], level=logging.ERROR)
+    stat_logger = Logger('statistics', file=config['paths']['save_statistics_file'], level=logging.INFO)
     for message in iter(queue.get, None):
         error_logger.handle(message)
         stat_logger.handle(message)
@@ -315,7 +141,6 @@ queue = manager.Queue()
 log_process = Process(target=lambda: logging_process(queue))
 log_process.start()
 simple_logger = Logger('simple', logging.INFO, queue)
-
 
 
 @avail_methods.route('')
@@ -630,7 +455,7 @@ class RemoveFile(Resource):
             return ErrorResponse(f'You have not specified structure ID obtained after uploading your file. '
                                  f'Add to URL following, please: ?structure_id=obtained_structure_id').json
         try:
-            structure = Structure(structure_id)
+            structure = Structure(structure_id, file_manager)
         except ValueError as e:
             simple_logger.log_error_message(request.remote_addr,
                                             'remove_file',
@@ -717,7 +542,7 @@ class AddHydrogens(Resource):
             ph = float(config['pH']['default'])
 
         try:
-            structure = Structure(structure_id)
+            structure = Structure(structure_id, file_manager)
             input_file = structure.get_pdb_input_file()
         except ValueError as e:
             simple_logger.log_error_message(request.remote_addr,
@@ -833,7 +658,7 @@ class GetInfo(Resource):
         ignore_water = get_ignore_water_value(ignore_water)  # default False
 
         try:
-            structure = Structure(structure_id)
+            structure = Structure(structure_id, file_manager)
             molecules = structure.get_molecules(read_hetatm, ignore_water)
         except ValueError as e:
             simple_logger.log_error_message(request.remote_addr,
@@ -853,7 +678,6 @@ class GetInfo(Resource):
         return OKResponse({'Number of molecules': molecules_count,
                            'Number of atoms': atom_count,
                            'Number of individual atoms': atoms_dict_count}).json
-
 
 
 # parser for query arguments
@@ -896,7 +720,7 @@ class SuitableMethods(Resource):
         ignore_water = get_ignore_water_value(ignore_water)  # default False
 
         try:
-            structure = Structure(structure_id)
+            structure = Structure(structure_id, file_manager)
             suitable_methods = structure.get_suitable_methods(read_hetatm, ignore_water)
         except ValueError as e:
             simple_logger.log_error_message(request.remote_addr,
@@ -947,7 +771,7 @@ class CalculationTask:
         return self._priority > other.priority
 
 
-priority_queue = PriorityQueue()
+# priority_queue = PriorityQueue()
 
 
 @calculate_time
@@ -960,8 +784,7 @@ def round_charges(charges):
     return rounded_charges
 
 
-calc_results = manager.dict()
-
+# calc_results = manager.dict()
 
 class CalculationResult:
     def __init__(self, calc_time, charges, method, parameters):
@@ -987,7 +810,7 @@ class CalculationResult:
 
 
 
-def calc_charges(molecules, method, parameters, calculation_id):
+def calc_charges(molecules, method, parameters):
     calc_start = time.perf_counter()
     charges = chargefw2_python.calculate_charges(molecules, method, parameters)
     calc_end = time.perf_counter()
@@ -1001,7 +824,18 @@ def calc_charges(molecules, method, parameters, calculation_id):
     return result_of_calculation
 
 
-priorities = manager.dict()  # {user_id: number_of_calculations_in_queue}
+# priorities = manager.dict()     #{user_id: number_of_calculations_in_queue}
+
+
+def get_suitable_parameters_for_method(suitable_methods, method):
+    # method does not require parameters
+    parameters = None
+    for item in suitable_methods:
+        if item['method'] == method:
+            if item['parameters'] != None:
+                parameters = item['parameters'][0]
+                return parameters
+    return parameters
 
 
 calc_parser = reqparse.RequestParser()
@@ -1057,7 +891,7 @@ class CalculateCharges(Resource):
                                  f'Add to URL following, please: ?structure_id=obtained_structure_id').json
 
         try:
-            structure = Structure(structure_id)
+            structure = Structure(structure_id, file_manager)
             suitable_methods = structure.get_suitable_methods(read_hetatm, ignore_water)
         except ValueError as e:
             simple_logger.log_error_message(request.remote_addr, 'calculate_charges', str(e))
@@ -1103,16 +937,30 @@ class CalculateCharges(Resource):
                 return ErrorResponse(
                     f'You can perform only {config["limits"]["max_long_calc"]} time demanding calculations per day.').json
 
-        calculation_id = pathlib.Path((tempfile.NamedTemporaryFile(prefix=structure_id).name)).name
-        calc_results[calculation_id] = None
+        # calculation_id = pathlib.Path((tempfile.NamedTemporaryFile(prefix=structure_id).name)).name
+        # calc_results[calculation_id] = None
+
+        # Thread(target=calc_charges, args=(molecules, method, parameters, calculation_id)).start()
+
+        # print('before push')
+        # # push task for calculation to priority_queue
+        # priority = priorities.get(request.remote_addr, 0)
+        # task = CalculationTask(priority, calculation_id, request.remote_addr, molecules, method, parameters)
+        # priorities[request.remote_addr] = priorities.get(request.remote_addr, 0) + 1
+        # priority_queue.put(task)
+        # print('task pushed', task)
 
         try:
-            results = calc_charges(molecules, method, parameters, calculation_id)
+            results = calc_charges(molecules, method, parameters)
         except RuntimeError as e:
             simple_logger.log_error_message(request.remote_addr,
                                             'calculate_charges',
                                             str(e))
             return ErrorResponse(str(e)).json
+
+        if config['limits']['on'] == 'True':
+            if results.calc_time > float(config['limits']['calc_time']):
+                add_long_calc(long_calculations, request.remote_addr)
 
         suffix = structure.get_structure_file()[-3:]
         molecules_count, atom_count, atoms_list_count = chargefw2_python.get_info(molecules)
@@ -1127,57 +975,67 @@ class CalculateCharges(Resource):
             {'charges': results.get_charges(), 'method': results.method, 'parameters': results.parameters}).json
 
 
-def calculation_process():
-    print('Before popping')
-    for calc_task in iter(priority_queue.get, None):
-        print('I have a task')
-        # try:
-        result = calc_charges(calc_task.get_molecules(), calc_task.get_method, calc_task.get_parameters,
-                              calc_task.calculation_id)
-
-        users_calculations_in_queue = priorities[request.remote_addr]
-        if users_calculations_in_queue == 1:
-            del priorities[request.remote_addr]
-        priorities[request.remote_addr] = users_calculations_in_queue - 1
-
-        calc_results[calculation_id] = {'charges': result.get_charges(),
-                                        'method': result.method,
-                                        'parameters': result.parameters}
-        # except RuntimeError as e:
-        #     calc_results[calculation_id] = e
-
-
-process_running_calculations = Process(target=calculation_process)
-process_running_calculations.start()
-
-get_calc_results_parser = reqparse.RequestParser()
-get_calc_results_parser.add_argument('calculation_id',
-                                     type=str,
-                                     help='Obtained calculation identifier',
-                                     required=True)
+# def calculation_process():
+#     print('Before popping')
+#     for calc_task in iter(priority_queue.get, None):
+#         print('I have a task')
+#         # try:
+#         result = calc_charges(calc_task.get_molecules(), calc_task.get_method, calc_task.get_parameters, calc_task.calculation_id)
+#
+#         users_calculations_in_queue = priorities[request.remote_addr]
+#         if users_calculations_in_queue == 1:
+#             del priorities[request.remote_addr]
+#         priorities[request.remote_addr] = users_calculations_in_queue - 1
+#
+#         calc_results[calculation_id] = {'charges': result.get_charges(),
+#                                         'method': result.method,
+#                                         'parameters': result.parameters}
+#         # except RuntimeError as e:
+#         #     calc_results[calculation_id] = e
 
 
-@get_calculation_results.route('')
-@api.expect(get_calc_results_parser)
-class GetCalculationResults(Resource):
-    def get(self):
-        calc_id = request.args.get('calculation_id')
-        if not calc_id:
-            return ErrorResponse(f'You have not specified calculation ID obtained after calculation request. '
-                                 f'Add to URL following, please: ?calculation_id=obtained_calculation_id').json
-        if not calc_id in calc_results:
-            return ErrorResponse('Calculation ID does not exist.').json
-        if not calc_results[calc_id]:
-            # print(calc_results[calc_id])
-            return ErrorResponse(f'The calculation has not yet been completed.').json
+# process_running_calculations = Process(target=calculation_process)
+# process_running_calculations.start()
 
-        charges = calc_results[calc_id]['charges']
-        method = calc_results[calc_id]['method']
-        parameters = calc_results[calc_id]['parameters']
-        # remove charges from calc_results
-        del calc_results[calc_id]
-        return OKResponse({'charges': charges, 'method': method, 'parameters': parameters}).json
 
+# get_calc_results_parser = reqparse.RequestParser()
+# get_calc_results_parser.add_argument('calculation_id',
+#                                      type=str,
+#                                      help='Obtained calculation identifier',
+#                                      required=True)
+# @get_calculation_results.route('')
+# @api.expect(get_calc_results_parser)
+# class GetCalculationResults(Resource):
+#     def get(self):
+#         calc_id = request.args.get('calculation_id')
+#         if not calc_id:
+#             return ErrorResponse(f'You have not specified calculation ID obtained after calculation request. '
+#                                  f'Add to URL following, please: ?calculation_id=obtained_calculation_id').json
+#         if not calc_id in calc_results:
+#             return ErrorResponse('Calculation ID does not exist.').json
+#         if not calc_results[calc_id]:
+#             # print(calc_results[calc_id])
+#             return ErrorResponse(f'The calculation has not yet been completed.').json
+#
+#         charges = calc_results[calc_id]['charges']
+#         method = calc_results[calc_id]['method']
+#         parameters = calc_results[calc_id]['parameters']
+#         # remove charges from calc_results
+#         del calc_results[calc_id]
+#         return OKResponse({'charges': charges, 'method': method, 'parameters': parameters}).json
+
+
+# def get_users_files_info(user):
+#     """Returns id, file name and info when the file was lastly modified for particular use"""
+#     files_info = []
+#     ids = user_id_manager[user]
+#     for id in ids:
+#         path_to_file = pathlib.Path(file_manager[id])
+#         file_name = path_to_file.name
+#         files_info.append(f'ID: {id}, '
+#                           f'name of file: {file_name}, '
+#                           f'file was last modified before {round(time.time() - path_to_file.stat().st_mtime, 2)}s.')
+#     return '\n'.join(files_info)
 
 class Limits:
     def __init__(self, user):
