@@ -1,5 +1,6 @@
 import chargefw2_python
 import pathlib
+import subprocess
 
 class Structure:
     def __init__(self, structure_id: str, file_manager):
