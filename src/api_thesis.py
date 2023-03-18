@@ -14,12 +14,11 @@ from threading import Timer, Thread
 import configparser
 import pathlib
 import logging
-import heapq
-from queue import PriorityQueue
 
 from Responses import OKResponse, ErrorResponse
 from Structure import Structure
 from Logger import Logger
+from File import File
 
 config = configparser.ConfigParser()
 config.read('/home/api_dev/api_dev/utils/api.ini')
@@ -143,12 +142,26 @@ log_process.start()
 simple_logger = Logger('simple', logging.INFO, queue)
 
 
+class Method:
+    def __init__(self, method):
+        self._method = method
+
+    def is_method_available(self):
+        return self._method in chargefw2_python.get_available_methods()
+
+    def get_available_parameters(self):
+        if not self.is_method_available():
+            raise ValueError(f'Method {self._method} is not available.')
+        return chargefw2_python.get_available_parameters(self._method)
+
+
 @avail_methods.route('')
 class AvailableMethodsEndpoint(Resource):
     def get(self):
         """Returns list of methods available for calculation of partial atomic charges"""
         simple_logger.log_statistics_message(request.remote_addr, endpoint_name='available_methods')
-        return OKResponse({'available_methods': chargefw2_python.get_available_methods()}).json
+        available_methods = chargefw2_python.get_available_methods()
+        return OKResponse({'available_methods': available_methods}).json
 
 
 @avail_params.route('')
@@ -167,21 +180,16 @@ class AvailableParametersEndpoint(Resource):
             return ErrorResponse(f'You have not specified method. '
                                  f'Add to URL following, please: ?method=your_chosen_method').json
 
-        if method not in chargefw2_python.get_available_methods():
+        try:
+            parameters = Method(method).get_available_parameters()
+        except ValueError as e:
             simple_logger.log_error_message(request.remote_addr,
                                             'available_parameters',
                                             f'User wanted to use method {method} that is not available')
-            return ErrorResponse(f'Method {method} is not available.', status_code=400).json
+            return ErrorResponse(str(e), status_code=400).json
 
         simple_logger.log_statistics_message(request.remote_addr, endpoint_name='available_parameters', method=method)
-        return OKResponse({'parameters': chargefw2_python.get_available_parameters(method)}).json
-
-
-def valid_suffix(files: TextIO) -> bool:
-    for file in files:
-        if not file.filename.endswith(('sdf', 'pdb', 'mol2', 'cif')):
-            return False
-    return True
+        return OKResponse({'parameters': parameters}).json
 
 
 def save_file_identifiers(identifiers: Dict[str, str]) -> None:
@@ -191,6 +199,15 @@ def save_file_identifiers(identifiers: Dict[str, str]) -> None:
         file_manager[identifier] = path_to_file
         user_id_manager[request.remote_addr].append(identifier)
         # {user: [id1, id2]}
+
+
+def user_has_no_space(file, user):
+    if limitations_on and user in used_space:
+        if file.get_size() + used_space[user] > int(config['limits']['granted_space']):
+            return True
+    if limitations_on:
+        used_space[user] = used_space.get(user, 0) + file.get_size()
+    return False
 
 
 # TODO not good - just one file (action='append' not working with files)
@@ -209,72 +226,50 @@ class SendFilesEndpoint(Resource):
     def post(self):
         """Send files in pdb, sdf or cif format"""
         files = request.files.getlist('file[]')
-
         if not files:
             simple_logger.log_error_message(request.remote_addr,
                                             'send_files',
                                             f'User did not send a file')
             return ErrorResponse(f'No file sent. Add to URL following, please: ?file[]=path_to_file').json
 
-        if not valid_suffix(files):
-            simple_logger.log_error_message(request.remote_addr,
-                                            f'send_files',
-                                            f'User sent file in unsupported format')
-            return ErrorResponse(f'Unsupported format. Send only .sdf, .mol2, .cif and .pdb files.',
-                                 status_code=400).json
-
-        tmpdir = tempfile.mkdtemp(dir=config['paths']['save_user_files'])
-        # tmpdir = tempfile.mkdtemp()
-        identifiers_plus_filepath = {}
-        identifiers_plus_filenames = {}
+        uploaded_files = {}
+        user_response = {}
         all_uploaded = True
+        tmpdir = tempfile.mkdtemp(dir=config['paths']['save_user_files'])
         for file in files:
-            path_to_file = os.path.join(tmpdir, file.filename)
-            file.save(path_to_file)
+            file = File(file, tmpdir)
+
+            if not file.has_valid_suffix():
+                simple_logger.log_error_message(request.remote_addr,
+                                                f'send_files',
+                                                f'User sent file in unsupported format')
+                return ErrorResponse(f'Unsupported format. Send only .sdf, .mol2, .cif and .pdb files.',
+                                     status_code=400).json
 
             # user has limited space
-            file_size = pathlib.Path(path_to_file).stat().st_size
-            if limitations_on and request.remote_addr in used_space:
-                if file_size + used_space[request.remote_addr] > int(config['limits']['granted_space']):
-                    all_uploaded = False
-                    break
-            if limitations_on:
-                used_space[request.remote_addr] = used_space.get(request.remote_addr, 0) + file_size
+            if user_has_no_space(file, request.remote_addr):
+                all_uploaded = False
+                break
 
-            # convert formats (different new lines)
-            subprocess.run(['dos2unix', path_to_file])
+            file.save()
+            file.convert_line_endings_to_unix_style()
+            uploaded_files[file.get_id()] = file.get_path()
+            user_response[file.get_filename()] = file.get_id()
 
-            identifier = os.path.basename(tempfile.NamedTemporaryFile(prefix=file.filename.rsplit('.')[0]).name)
-            identifiers_plus_filepath[identifier] = path_to_file
-            identifiers_plus_filenames[file.filename.rsplit('.')[0]] = identifier
-
-        save_file_identifiers(identifiers_plus_filepath)
-
+        save_file_identifiers(uploaded_files)
         simple_logger.log_statistics_message(request.remote_addr,
                                              endpoint_name='send_files',
                                              number_of_sent_files=len(files))
 
         if all_uploaded:
-            return OKResponse({'structure_ids': identifiers_plus_filenames}).json
+            return OKResponse({'structure_ids': user_response}).json
         # some ids were uploaded, but not all because the limited disk space
-        elif not all_uploaded and identifiers_plus_filenames:
+        elif not all_uploaded and user_response:
             return jsonify({'message': 'You have exceeded the grounded disk space',
                             'status_code': 413,
-                            'successfully_uploaded_structure_ids': identifiers_plus_filenames})
+                            'successfully_uploaded_structure_ids': user_response})
         else:
             return ErrorResponse('You have exceeded the grounded disk space', 413).json
-
-
-def write_file(path_to_file, r):
-    file_size = 0
-    with open(path_to_file, 'wb') as fd:
-        for chunk in r.iter_content(chunk_size=128):
-            fd.write(chunk)
-            file_size += len(chunk)
-            if config['limits']['on'] == 'True':
-                if file_size > int(config['limits']['file_size']):
-                    return False
-    return True
 
 
 # parser for query arguments
@@ -292,7 +287,6 @@ class PdbID(Resource):
     def post(self):
         """Specify PDB ID of your structure."""
         pdb_identifiers = request.args.getlist('pid[]')
-
         if not pdb_identifiers:
             simple_logger.log_error_message(request.remote_addr,
                                             'pdb_id',
@@ -300,8 +294,8 @@ class PdbID(Resource):
             return ErrorResponse('No pdb id specified. Add to URL following, please: ?pid[]=pdb_id').json
 
         tmpdir = tempfile.mkdtemp(dir=config['paths']['save_user_files'])
-        identifiers_plus_filepath = {}
-        identifiers_plus_filename = {}
+        uploaded_files = {}
+        user_response = {}
         all_uploaded = True
         for pdb_id in pdb_identifiers:
             r = requests.get('https://files.rcsb.org/download/' + pdb_id + '.cif', stream=True)
@@ -315,8 +309,8 @@ class PdbID(Resource):
                 return ErrorResponse(f'{e}', r.status_code).json
 
             # save requested pdb structure
-            path_to_file = os.path.join(tmpdir, pdb_id + '.cif')
-            successfully_written_file = write_file(path_to_file, r)
+            file = File(os.path.join(f'{pdb_id}.cif'), tmpdir)
+            successfully_written_file = file.write_file(r, config)
             if not successfully_written_file:
                 simple_logger.log_error_message(request.remote_addr,
                                                 'pdb_id',
@@ -324,31 +318,25 @@ class PdbID(Resource):
                 return ErrorResponse(f'Not possible to upload {pdb_id}. It is bigger than 10 Mb.', 400).json
 
             # user has limited space
-            file_size = pathlib.Path(path_to_file).stat().st_size
-            if limitations_on and request.remote_addr in used_space:
-                if file_size + used_space[request.remote_addr] > int(config['limits']['granted_space']):
-                    all_uploaded = False
-                    break
-            if limitations_on:
-                used_space[request.remote_addr] = used_space.get(request.remote_addr, 0) + file_size
+            if user_has_no_space(file, request.remote_addr):
+                all_uploaded = False
+                break
 
-            identifier = os.path.basename(tempfile.NamedTemporaryFile(prefix=pdb_id).name)
-            identifiers_plus_filepath[identifier] = path_to_file
-            identifiers_plus_filename[pdb_id] = identifier
+            uploaded_files[file.get_id()] = file.get_path()
+            user_response[file.get_filename()] = file.get_id()
 
-        save_file_identifiers(identifiers_plus_filepath)
-
+        save_file_identifiers(uploaded_files)
         simple_logger.log_statistics_message(request.remote_addr,
                                              endpoint_name='pdb_id',
                                              number_of_requested_structures=len(pdb_identifiers))
 
         if all_uploaded:
-            return OKResponse({'structure_ids': identifiers_plus_filename}).json
+            return OKResponse({'structure_ids': user_response}).json
         # some ids were uploaded, but not all because the limited disk space
-        elif not all_uploaded and identifiers_plus_filepath:
+        elif not all_uploaded and user_response:
             return jsonify({'message': 'You have exceeded the grounded disk space',
                             'status_code': 413,
-                            'successfully_uploaded_structure_ids': identifiers_plus_filenames})
+                            'successfully_uploaded_structure_ids': user_response})
         else:
             return ErrorResponse('You have exceeded the grounded disk space', 413).json
 
@@ -368,7 +356,6 @@ class PubchemCID(Resource):
     def post(self):
         """Specify Pubchem CID of your structure."""
         cid_identifiers = request.args.getlist('cid[]')
-
         if not cid_identifiers:
             simple_logger.log_error_message(request.remote_addr,
                                             'pubchem_id',
@@ -376,8 +363,8 @@ class PubchemCID(Resource):
             return ErrorResponse('No pubchem cid specified. Add to URL following, please: ?cid[]=pubchem_cid').json
 
         tmpdir = tempfile.mkdtemp(dir=config['paths']['save_user_files'])
-        identifiers_plus_filepath = {}
-        identifiers_plus_filenames = {}
+        uploaded_files = {}
+        user_response = {}
         all_uploaded = True
         for cid in cid_identifiers:
             r = requests.get('https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/CID/' +
@@ -394,8 +381,8 @@ class PubchemCID(Resource):
                 return ErrorResponse(f'{e}', r.status_code).json
 
             # save requested cid compound
-            path_to_file = os.path.join(tmpdir, cid + '.sdf')
-            successfully_written_file = write_file(path_to_file, r)
+            file = File(os.path.join(f'{cid}.sdf'), tmpdir)
+            successfully_written_file = file.write_file(r, config)
             if not successfully_written_file:
                 simple_logger.log_error_message(request.remote_addr,
                                                 'cid',
@@ -403,33 +390,36 @@ class PubchemCID(Resource):
                 return ErrorResponse(f'Not possible to upload {cid}. It is bigger than 10 Mb.', 400).json
 
             # user has limited space
-            file_size = pathlib.Path(path_to_file).stat().st_size
-            if limitations_on and request.remote_addr in used_space:
-                if file_size + used_space[request.remote_addr] > int(config['limits']['granted_space']):
-                    all_uploaded = False
-                    break
-            if limitations_on:
-                used_space[request.remote_addr] = used_space.get(request.remote_addr, 0) + file_size
+            if user_has_no_space(file, request.remote_addr):
+                all_uploaded = False
+                break
 
-            identifier = os.path.basename(tempfile.NamedTemporaryFile(prefix=cid).name)
-            identifiers_plus_filepath[identifier] = path_to_file
-            identifiers_plus_filenames[cid] = identifier
+            uploaded_files[file.get_id()] = file.get_path()
+            user_response[file.get_filename()] = file.get_id()
 
-        save_file_identifiers(identifiers_plus_filepath)
+        save_file_identifiers(uploaded_files)
 
         simple_logger.log_statistics_message(request.remote_addr,
                                              endpoint_name='pubchem_cid',
                                              number_of_requested_structures=len(cid_identifiers))
 
         if all_uploaded:
-            return OKResponse({'structure_ids': identifiers_plus_filenames}).json
+            return OKResponse({'structure_ids': user_response}).json
         # some ids were uploaded, but not all because the limited disk space
-        elif not all_uploaded and identifiers_plus_filenames:
+        elif not all_uploaded and user_response:
             return jsonify({'message': 'You have exceeded the grounded disk space',
                             'status_code': 413,
-                            'successfully_uploaded_structure_ids': identifiers_plus_filenames})
+                            'successfully_uploaded_structure_ids': user_response})
         else:
             return ErrorResponse('You have exceeded the grounded disk space', 413).json
+
+
+def release_space(file_size, user):
+    if limitations_on:
+        if used_space[user] - file_size <= 0:
+            del used_space[user]
+        else:
+            used_space[user] = used_space[user] - file_size
 
 
 remove_file_parser = reqparse.RequestParser()
@@ -470,21 +460,14 @@ class RemoveFile(Resource):
             return ErrorResponse(f'You are not allowed to remove {structure_id}. It is not your structure.').json
 
         path_to_file = pathlib.Path(structure.get_structure_file())
+        file = File(str(pathlib.Path(path_to_file.name)), path_to_file.parent)
 
         # remove from file_manager and user_id_manager
         del file_manager[structure_id]
         delete_id_from_user(structure_id)
-
         # release space
-        file_size = path_to_file.stat().st_size
-        if limitations_on:
-            if used_space[request.remote_addr] - file_size <= 0:
-                del used_space[request.remote_addr]
-            else:
-                used_space[request.remote_addr] = used_space[request.remote_addr] - file_size
-
-        os.remove(path_to_file)
-        path_to_file.parent.rmdir()
+        release_space(file.get_size(), request.remote_addr)
+        file.remove()
         simple_logger.log_statistics_message(request.remote_addr,
                                              endpoint_name='remove_file',
                                              structure_id=structure_id,
@@ -1024,18 +1007,6 @@ class CalculateCharges(Resource):
 #         del calc_results[calc_id]
 #         return OKResponse({'charges': charges, 'method': method, 'parameters': parameters}).json
 
-
-# def get_users_files_info(user):
-#     """Returns id, file name and info when the file was lastly modified for particular use"""
-#     files_info = []
-#     ids = user_id_manager[user]
-#     for id in ids:
-#         path_to_file = pathlib.Path(file_manager[id])
-#         file_name = path_to_file.name
-#         files_info.append(f'ID: {id}, '
-#                           f'name of file: {file_name}, '
-#                           f'file was last modified before {round(time.time() - path_to_file.stat().st_mtime, 2)}s.')
-#     return '\n'.join(files_info)
 
 class Limits:
     def __init__(self, user):
