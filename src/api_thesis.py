@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, send_from_directory, jsonify
+from flask import Flask, render_template, request, send_file, jsonify
 from flask_restx import Api, Resource, reqparse
 from werkzeug.datastructures import FileStorage
 from typing import Dict, TextIO, Any, Union, List, Tuple
@@ -14,9 +14,11 @@ from threading import Timer, Thread
 import configparser
 import pathlib
 import logging
+from io import BytesIO
+from zipfile import ZipFile
 
 from Responses import OKResponse, ErrorResponse
-from Structure import Structure
+from Structures import Structure, Method
 from Logger import Logger
 from File import File
 
@@ -80,6 +82,9 @@ hydrogens = api.namespace('add_hydrogens',
                           description='WIP: Might not work as expected - works just fo structures in .pdb format! '
                                       'Add hydrogens to your structure.')
 
+get_structure_file = api.namespace('get_structure_file',
+                                   description='Get structure file saved under specific ID.')
+
 # namespace for available_method root - for documentation
 avail_methods = api.namespace('available_methods',
                               description='Get available methods provided by Atomic Charge Calculator '
@@ -140,19 +145,6 @@ queue = manager.Queue()
 log_process = Process(target=lambda: logging_process(queue))
 log_process.start()
 simple_logger = Logger('simple', logging.INFO, queue)
-
-
-class Method:
-    def __init__(self, method):
-        self._method = method
-
-    def is_method_available(self):
-        return self._method in chargefw2_python.get_available_methods()
-
-    def get_available_parameters(self):
-        if not self.is_method_available():
-            raise ValueError(f'Method {self._method} is not available.')
-        return chargefw2_python.get_available_parameters(self._method)
 
 
 @avail_methods.route('')
@@ -446,7 +438,7 @@ class RemoveFile(Resource):
                                  f'Add to URL following, please: ?structure_id=obtained_structure_id').json
         try:
             structure = Structure(structure_id, file_manager)
-        except ValueError as e:
+        except ValueError:
             simple_logger.log_error_message(request.remote_addr,
                                             'remove_file',
                                             'User specified id that does not exist',
@@ -476,7 +468,7 @@ class RemoveFile(Resource):
         return OKResponse({structure_id: 'removed'}).json
 
 
-def convert_pqr_to_pdb(pqr_file: str, pdb_file: str) -> None:
+def convert_pqr_to_pdb(pqr_file: os.PathLike, pdb_file: os.PathLike) -> None:
     """Converts .pqr to .pdb format - using open babel"""
     try:
         subprocess.run(['obabel', f'-ipqr', f'{pqr_file}', f'-opdb', f'-O{pdb_file}'], check=True)
@@ -532,17 +524,21 @@ class AddHydrogens(Resource):
                                             'add_hydrogens',
                                             f'{str(e)}')
             return ErrorResponse(f'{str(e)}', status_code=400).json
-        output_pqr_file = os.path.join(tempfile.mkdtemp(dir=config['paths']['save_user_files']), 'result.pqr')
-        output_pdb_file = output_pqr_file[:-4] + '.pdb'
+
+        output_dir = tempfile.mkdtemp(dir=config['paths']['save_user_files'])
+        pqr_file = File(structure_id + '.pqr', output_dir)
+        path_to_pqr = pathlib.Path(pqr_file.get_path())
+        pdb_file = File(structure_id + 'pdb', output_dir)
+        path_to_pdb = pathlib.Path(pdb_file.get_path())
 
         # hydrogen bond optimalization
         noopt = request.args.get('noopt')
 
         if not noopt:
             try:
-                subprocess.run(['pdb2pqr30', f'--noopt', f'--pH', f'{ph}', f'{input_file}', f'{output_pqr_file}'],
+                subprocess.run(['pdb2pqr30', f'--noopt', f'--pH', f'{ph}', f'{input_file}', f'{path_to_pqr}'],
                                check=True)
-            except subprocess.CalledProcessError as e:
+            except subprocess.CalledProcessError:
                 simple_logger.log_error_message(request.remote_addr,
                                                 'add_hydrogens',
                                                 'Error occurred when using pdb2pqr30',
@@ -551,8 +547,8 @@ class AddHydrogens(Resource):
                                      status_code=405).json
         else:
             try:
-                subprocess.run(['pdb2pqr30', f'--pH', f'{ph}', f'{input_file}', f'{output_pqr_file}'], check=True)
-            except subprocess.CalledProcessError as e:
+                subprocess.run(['pdb2pqr30', f'--pH', f'{ph}', f'{input_file}', f'{path_to_pqr}'], check=True)
+            except subprocess.CalledProcessError:
                 simple_logger.log_error_message(request.remote_addr,
                                                 'add_hydrogens',
                                                 'Error occurred when using pdb2pqr30',
@@ -560,36 +556,72 @@ class AddHydrogens(Resource):
                 return ErrorResponse(f'Error occurred when using pdb2pqr30 on structure {structure_id}',
                                      status_code=405).json
 
-        output_identifier = os.path.basename(tempfile.NamedTemporaryFile(prefix='hydro').name)
+        pdb_file_id = pdb_file.get_id()
         try:
-            convert_pqr_to_pdb(output_pqr_file, output_pdb_file)
+            convert_pqr_to_pdb(path_to_pqr, path_to_pdb)
         except ValueError as e:
             simple_logger.log_error_message(request.remote_addr,
                                             'add_hydrogens',
                                             f'{str(e)}')
             return ErrorResponse(f'{str(e)}', status_code=405).json
-        save_file_identifiers({output_identifier: output_pdb_file})
+        save_file_identifiers({pdb_file_id: path_to_pdb})
 
         simple_logger.log_statistics_message(request.remote_addr,
                                              endpoint_name='add_hydrogens',
                                              ph=ph,
                                              noopt=noopt)
-        return OKResponse({'structure_id': output_identifier}).json
+        return OKResponse({'structure_id': pdb_file_id}).json
 
 
-def get_read_hetatm_value(read_hetatm: Union[None, str]) -> bool:
-    """Get boolean value - if user wants to read hetatoms from input pdb/mmcif file"""
-    if read_hetatm:
-        read_hetatm = read_hetatm.lower()
-    return read_hetatm != 'false'  # default: True
+def create_zip_file(folder):
+    stream = BytesIO()
+    with ZipFile(stream, 'w') as zf:
+        for file in folder.glob('*'):
+            zf.write(file, file.name)
+    stream.seek(0)
+    return stream
 
 
-def get_ignore_water_value(ignore_water: Union[None, str]) -> bool:
-    """Get boolean value - if user wants to ignore water read hetatoms
-    from input pdb/mmcif file"""
-    if ignore_water:
-        ignore_water = ignore_water.lower()
-    return ignore_water == 'true'  # default False
+# parser for query arguments
+file_parser = reqparse.RequestParser()
+file_parser.add_argument('structure_id',
+                         type=str,
+                         help='Obtained structure identifier of your structure',
+                         required=True)
+
+
+@get_structure_file.route('')
+@api.doc(responses={404: 'Structure ID not specified',
+                    400: 'Structure ID does not exist / Structure not in correct format'})
+@api.expect(file_parser)
+class StructureFile(Resource):
+    def get(self):
+        structure_id = request.args.get('structure_id')
+        if not structure_id:
+            simple_logger.log_error_message(request.remote_addr,
+                                            'get_structure_file',
+                                            'User did not specify structure id')
+            return ErrorResponse(
+                f'You have not specified structure ID obtained after uploading/adding hydrogens to your file. '
+                f'Add to URL following, please: ?structure_id=obtained_structure_id').json
+        try:
+            file = Structure(structure_id, file_manager).get_structure_file()
+        except ValueError as e:
+            simple_logger.log_error_message(request.remote_addr,
+                                            'get_structure_file',
+                                            'Structure id does not exist',
+                                            structure_id=structure_id)
+            return ErrorResponse(str(e), 400).json
+
+        stream = create_zip_file(pathlib.Path(file).parent)
+        return send_file(stream, download_name='structures.zip', as_attachment=True)
+
+
+def get_bool_value(original: Union[None, str]) -> bool:
+    """Get boolean value - set to default if parameters not specified"""
+    if original:
+        original = original.lower()
+    return original == 'true'
 
 
 def get_dict_atoms_count(atoms_list_count):
@@ -637,8 +669,8 @@ class GetInfo(Resource):
             return ErrorResponse(f'You have not specified structure ID obtained after uploading your file. '
                                  f'Add to URL following, please: ?structure_id=obtained_structure_id').json
 
-        read_hetatm = get_read_hetatm_value(read_hetatm)  # default: True
-        ignore_water = get_ignore_water_value(ignore_water)  # default False
+        read_hetatm = get_bool_value(read_hetatm)  # default: True
+        ignore_water = get_bool_value(ignore_water)  # default False
 
         try:
             structure = Structure(structure_id, file_manager)
@@ -699,8 +731,8 @@ class SuitableMethods(Resource):
             return ErrorResponse(f'You have not specified structure ID obtained after uploading your file. '
                                  f'Add to URL following, please: ?structure_id=obtained_structure_id').json
 
-        read_hetatm = get_read_hetatm_value(read_hetatm)  # default: True
-        ignore_water = get_ignore_water_value(ignore_water)  # default False
+        read_hetatm = get_bool_value(read_hetatm)  # default: True
+        ignore_water = get_bool_value(ignore_water)  # default False
 
         try:
             structure = Structure(structure_id, file_manager)
@@ -715,46 +747,6 @@ class SuitableMethods(Resource):
                                              endpoint_name='suitable_methods',
                                              suitable_methods=suitable_methods)
         return OKResponse({'suitable_methods': suitable_methods}).json
-
-
-class CalculationTask:
-    def __init__(self, priority, calculation_id, user_id, molecules, method, parameters):
-        self._priority = priority
-        self._calculation_id = calculation_id
-        self._user_id = user_id
-        self._molecules = molecules
-        self._method = method
-        self._parameters = parameters
-
-    @property
-    def priority(self):
-        return self._priority
-
-    @property
-    def calculation_id(self):
-        return self._calculation_id
-
-    @property
-    def user_id(self):
-        return self._user_id
-
-    def get_molecules(self):
-        return self._molecules
-
-    def get_method(self):
-        return self._method
-
-    def get_parameters(self):
-        return self._parameters
-
-    def __lt__(self, other):
-        return self._priority < other.priority
-
-    def __gt__(self, other):
-        return self._priority > other.priority
-
-
-# priority_queue = PriorityQueue()
 
 
 @calculate_time
@@ -807,20 +799,6 @@ def calc_charges(molecules, method, parameters):
     return result_of_calculation
 
 
-# priorities = manager.dict()     #{user_id: number_of_calculations_in_queue}
-
-
-def get_suitable_parameters_for_method(suitable_methods, method):
-    # method does not require parameters
-    parameters = None
-    for item in suitable_methods:
-        if item['method'] == method:
-            if item['parameters'] != None:
-                parameters = item['parameters'][0]
-                return parameters
-    return parameters
-
-
 calc_parser = reqparse.RequestParser()
 calc_parser.add_argument('structure_id',
                          type=str,
@@ -863,8 +841,8 @@ class CalculateCharges(Resource):
         read_hetatm = request.args.get('read_hetatm')
         ignore_water = request.args.get('ignore_water')
 
-        read_hetatm = get_read_hetatm_value(read_hetatm)  # default: True
-        ignore_water = get_ignore_water_value(ignore_water)  # default False
+        read_hetatm = get_bool_value(read_hetatm)  # default: True
+        ignore_water = get_bool_value(ignore_water)  # default False
 
         if not structure_id:
             simple_logger.log_error_message(request.remote_addr,
