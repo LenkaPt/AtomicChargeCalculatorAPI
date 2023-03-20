@@ -71,3 +71,16 @@ class Structure:
         if not input_file.endswith('pdb'):
             raise ValueError(f'{self._structure_id} is not in .pdb or .cif format')
         return input_file
+
+
+class Method:
+    def __init__(self, method):
+        self._method = method
+
+    def is_method_available(self):
+        return self._method in chargefw2_python.get_available_methods()
+
+    def get_available_parameters(self):
+        if not self.is_method_available():
+            raise ValueError(f'Method {self._method} is not available.')
+        return chargefw2_python.get_available_parameters(self._method)
