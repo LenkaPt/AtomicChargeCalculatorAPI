@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, send_file, jsonify
+from flask import Flask, render_template, request, send_file, jsonify, send_from_directory
 from flask_restx import Api, Resource, reqparse
 from werkzeug.datastructures import FileStorage
 from typing import Dict, TextIO, Any, Union, List, Tuple
@@ -99,8 +99,8 @@ suitable_methods = api.namespace('suitable_methods',
                                  description='Find out all methods suitable '
                                              'for your structure.')
 
-calculate_charges = api.namespace('calculate_charges',
-                                  description='Calculate partial atomic charges.')
+calc_charges = api.namespace('calculate_charges',
+                             description='Calculate partial atomic charges.')
 
 get_calculation_results = api.namespace('get_calculation_results',
                                         description='Get results from calculation of partial atomic charges')
@@ -613,8 +613,8 @@ class StructureFile(Resource):
                                             structure_id=structure_id)
             return ErrorResponse(str(e), 400).json
 
-        stream = create_zip_file(pathlib.Path(file).parent)
-        return send_file(stream, download_name='structures.zip', as_attachment=True)
+        zip_file = create_zip_file(pathlib.Path(file).parent)
+        return send_file(zip_file, download_name='structures.zip', as_attachment=True)
 
 
 def get_bool_value(original: Union[None, str]) -> bool:
@@ -759,8 +759,6 @@ def round_charges(charges):
     return rounded_charges
 
 
-# calc_results = manager.dict()
-
 class CalculationResult:
     def __init__(self, calc_time, charges, method, parameters):
         self._calc_time = calc_time
@@ -785,14 +783,10 @@ class CalculationResult:
 
 
 
-def calc_charges(molecules, method, parameters):
+def calculate_charges(molecules, method, parameters):
     calc_start = time.perf_counter()
     charges = chargefw2_python.calculate_charges(molecules, method, parameters)
     calc_end = time.perf_counter()
-
-    if config['limits']['on'] == 'True':
-        if calc_end - calc_start > float(config['limits']['calc_time']):
-            add_long_calc(long_calculations, request.remote_addr)
 
     rounded_charges = round_charges(charges)
     result_of_calculation = CalculationResult(round(calc_end - calc_start, 2), rounded_charges, method, parameters)
@@ -822,7 +816,7 @@ calc_parser.add_argument('ignore_water',
                               'Default: False')
 
 
-@calculate_charges.route('')
+@calc_charges.route('')
 @api.doc(responses={404: 'Structure ID not specified',
                     400: 'Structure ID does not exist/'
                          'input file is not correct/'
@@ -853,7 +847,7 @@ class CalculateCharges(Resource):
 
         try:
             structure = Structure(structure_id, file_manager)
-            suitable_methods = structure.get_suitable_methods(read_hetatm, ignore_water)
+            # suitable_methods = structure.get_suitable_methods(read_hetatm, ignore_water)
         except ValueError as e:
             simple_logger.log_error_message(request.remote_addr, 'calculate_charges', str(e))
             return ErrorResponse(str(e), 400).json
@@ -867,13 +861,8 @@ class CalculateCharges(Resource):
                                                 method=method)
                 return ErrorResponse(f'Method {method} is not available.', status_code=400).json
 
-            if parameters and parameters not in chargefw2_python.get_available_parameters(method):
-                simple_logger.log_error_message(request.remote_addr,
-                                                'calculate_charges',
-                                                f'Parameters {parameters} are not available for method {method}')
-                return ErrorResponse(f'Parameters {parameters} are not available for method {method}').json
-
         if not method:
+            suitable_methods = structure.get_suitable_methods(read_hetatm, ignore_water)
             method = suitable_methods[0]['method']
             if not suitable_methods[0]['parameters']:
                 parameters = None
@@ -898,21 +887,8 @@ class CalculateCharges(Resource):
                 return ErrorResponse(
                     f'You can perform only {config["limits"]["max_long_calc"]} time demanding calculations per day.').json
 
-        # calculation_id = pathlib.Path((tempfile.NamedTemporaryFile(prefix=structure_id).name)).name
-        # calc_results[calculation_id] = None
-
-        # Thread(target=calc_charges, args=(molecules, method, parameters, calculation_id)).start()
-
-        # print('before push')
-        # # push task for calculation to priority_queue
-        # priority = priorities.get(request.remote_addr, 0)
-        # task = CalculationTask(priority, calculation_id, request.remote_addr, molecules, method, parameters)
-        # priorities[request.remote_addr] = priorities.get(request.remote_addr, 0) + 1
-        # priority_queue.put(task)
-        # print('task pushed', task)
-
         try:
-            results = calc_charges(molecules, method, parameters)
+            result = calculate_charges(molecules, method, parameters)
         except RuntimeError as e:
             simple_logger.log_error_message(request.remote_addr,
                                             'calculate_charges',
@@ -920,7 +896,7 @@ class CalculateCharges(Resource):
             return ErrorResponse(str(e)).json
 
         if config['limits']['on'] == 'True':
-            if results.calc_time > float(config['limits']['calc_time']):
+            if result.calc_time > float(config['limits']['calc_time']):
                 add_long_calc(long_calculations, request.remote_addr)
 
         suffix = structure.get_structure_file()[-3:]
@@ -931,60 +907,10 @@ class CalculateCharges(Resource):
                                              number_of_molecules=molecules_count,
                                              number_of_atoms=atom_count,
                                              method=method,
-                                             parameters=parameters)
+                                             parameters=parameters,
+                                             time=result.calc_time)
         return OKResponse(
-            {'charges': results.get_charges(), 'method': results.method, 'parameters': results.parameters}).json
-
-
-# def calculation_process():
-#     print('Before popping')
-#     for calc_task in iter(priority_queue.get, None):
-#         print('I have a task')
-#         # try:
-#         result = calc_charges(calc_task.get_molecules(), calc_task.get_method, calc_task.get_parameters, calc_task.calculation_id)
-#
-#         users_calculations_in_queue = priorities[request.remote_addr]
-#         if users_calculations_in_queue == 1:
-#             del priorities[request.remote_addr]
-#         priorities[request.remote_addr] = users_calculations_in_queue - 1
-#
-#         calc_results[calculation_id] = {'charges': result.get_charges(),
-#                                         'method': result.method,
-#                                         'parameters': result.parameters}
-#         # except RuntimeError as e:
-#         #     calc_results[calculation_id] = e
-
-
-# process_running_calculations = Process(target=calculation_process)
-# process_running_calculations.start()
-
-
-# get_calc_results_parser = reqparse.RequestParser()
-# get_calc_results_parser.add_argument('calculation_id',
-#                                      type=str,
-#                                      help='Obtained calculation identifier',
-#                                      required=True)
-# @get_calculation_results.route('')
-# @api.expect(get_calc_results_parser)
-# class GetCalculationResults(Resource):
-#     def get(self):
-#         calc_id = request.args.get('calculation_id')
-#         if not calc_id:
-#             return ErrorResponse(f'You have not specified calculation ID obtained after calculation request. '
-#                                  f'Add to URL following, please: ?calculation_id=obtained_calculation_id').json
-#         if not calc_id in calc_results:
-#             return ErrorResponse('Calculation ID does not exist.').json
-#         if not calc_results[calc_id]:
-#             # print(calc_results[calc_id])
-#             return ErrorResponse(f'The calculation has not yet been completed.').json
-#
-#         charges = calc_results[calc_id]['charges']
-#         method = calc_results[calc_id]['method']
-#         parameters = calc_results[calc_id]['parameters']
-#         # remove charges from calc_results
-#         del calc_results[calc_id]
-#         return OKResponse({'charges': charges, 'method': method, 'parameters': parameters}).json
-
+            {'charges': result.get_charges(), 'method': result.method, 'parameters': result.parameters}).json
 
 class Limits:
     def __init__(self, user):
