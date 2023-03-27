@@ -29,7 +29,7 @@ from File import File
 
 
 config = configparser.ConfigParser()
-config.read('/home/api_dev/api_dev/utils/api.ini')
+config.read('/home/chargefw2/api_acc2/utils/api.ini')
 app = Flask(__name__)
 if config['limits']['on'] == 'True':
     app.config['MAX_CONTENT_LENGTH'] = int(config['limits']['file_size'])
