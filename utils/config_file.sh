@@ -49,11 +49,11 @@ sudo apt-get install -y tao-pegtl-dev
 
 # chargefw2
 sudo apt install -y git
-sudo? git clone --depth 1 https://github.com/LenkaPt/ChargeFW2.git
+git clone --depth 1 https://github.com/LenkaPt/ChargeFW2.git
 cd ChargeFW2
-sudo? mkdir build
+mkdir build
 cd build
-sudo? cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake .. -DCMAKE_BUILD_TYPE=Release
 make
 sudo make install
 
