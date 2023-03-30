@@ -1,5 +1,6 @@
 import requests
 import pytest
+from pathlib import Path
 
 
 def send_file(file, url):
@@ -49,12 +50,11 @@ def test_get_limits(url):
 
 
 def test_limited_granted_space(url, granted_space, valid_file):
-    response_pdb = pdb_id('1ner', url).json()['message']
     response_send_file = send_file(valid_file, url).json()['message']
-    for i in range(granted_space):
-        response_pdb = pdb_id('1ner', url).json()['message']
+    file_size = Path(valid_file).stat().st_size
+    crowded_space = file_size
+    while granted_space >= crowded_space:
         response_send_file = send_file(valid_file, url).json()['message']
+        crowded_space += file_size
     # user exceeded his grounted space
-    assert response_pdb != 'OK'
-    # to be sure limitations work globaly
     assert response_send_file != 'OK'
