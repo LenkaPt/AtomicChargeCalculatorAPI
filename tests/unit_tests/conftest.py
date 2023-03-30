@@ -1,5 +1,6 @@
 import pytest
 
+
 def pytest_addoption(parser):
     parser.addoption(
         '--url', action='store', default='http://localhost:8080', help='Base URL for the API tests'
@@ -35,40 +36,48 @@ def url(request):
     url = request.config.getoption('--url')
     return url
 
+
 @pytest.fixture(scope='module')
 def valid_id(request):
     valid_id = request.config.getoption('--valid_id')
     return valid_id
+
 
 @pytest.fixture(scope='module')
 def invalid_id(request):
     invalid_id = request.config.getoption('--invalid_id')
     return invalid_id
 
+
 @pytest.fixture(scope='module')
 def sdf_id(request):
     sdf_id = request.config.getoption('--sdf_id')
     return sdf_id
+
 
 @pytest.fixture(scope='module')
 def valid_file(request):
     valid_file = request.config.getoption('--valid_file')
     return valid_file
 
+
 @pytest.fixture(scope='module')
 def invalid_format(request):
     invalid_format = request.config.getoption('--invalid_format')
     return invalid_format
+
 
 @pytest.fixture(scope='module')
 def big_file(request):
     big_file = request.config.getoption('--big_file')
     return big_file
 
+
 @pytest.fixture(scope='module')
 def max_long_calc(request):
     max_long_calc = request.config.getoption('--max_long_calc')
     return max_long_calc
+
 
 @pytest.fixture(scope='module')
 def granted_space(request):
