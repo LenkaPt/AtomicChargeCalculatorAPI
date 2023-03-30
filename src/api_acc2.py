@@ -1,7 +1,7 @@
-from flask import Flask, render_template, request, send_file, jsonify, send_from_directory
+from flask import Flask, render_template, request, send_file, jsonify
 from flask_restx import Api, Resource, reqparse
 from werkzeug.datastructures import FileStorage
-from typing import Dict, TextIO, Any, Union, List, Tuple
+from typing import Dict, Any, Union, List, Tuple, Callable
 from multiprocessing import Process, Manager, Queue
 import tempfile
 import os
@@ -102,7 +102,7 @@ get_limits = api.namespace('get_limits',
                            description='Get info about limits, your files.')
 
 
-def calculate_time(func):
+def calculate_time(func: Callable) -> Callable:
     def inner(*args, **kwargs):
         with open(config['paths']['log_time'], mode='a') as file:
             file.write(f'---STARTING---{func.__qualname__}\n')
@@ -124,7 +124,7 @@ def calculate_time(func):
     return inner
 
 
-def logging_process(queue):
+def logging_process(queue: Queue) -> None:
     error_logger = Logger('error', file=config['paths']['log_error'], level=logging.ERROR)
     stat_logger = Logger('statistics', file=config['paths']['save_statistics_file'], level=logging.INFO)
     for message in iter(queue.get, None):
@@ -142,7 +142,7 @@ simple_logger = Logger('simple', logging.INFO, queue)
 
 @avail_methods.route('')
 class AvailableMethodsEndpoint(Resource):
-    def get(self):
+    def get(self) -> Dict[str, Union[List[str], int]]:
         """Returns list of methods available for calculation of partial atomic charges"""
         available_methods = chargefw2_python.get_available_methods()
         response = OKResponse(data={'available_methods': available_methods}, request=request)
@@ -156,7 +156,7 @@ class AvailableMethodsEndpoint(Resource):
                     400: 'Method not available',
                     200: 'OK'})
 class AvailableParametersEndpoint(Resource):
-    def get(self):
+    def get(self) -> Union[Tuple[Dict[str, Union[str, int]], int], Dict[str, Union[List[str], int]]]:
         """Returns list of available parameters for specific method"""
         method = request.args.get('method')
         if not method:
@@ -176,7 +176,7 @@ class AvailableParametersEndpoint(Resource):
         return response.json
 
 
-def save_file_identifiers(identifiers: Dict[str, str]) -> None:
+def save_file_identifiers(identifiers: Dict[str, Union[str, os.PathLike]]) -> None:
     if request.remote_addr not in user_id_manager:
         user_id_manager[request.remote_addr] = manager.list()
     for identifier, path_to_file in identifiers.items():
@@ -185,7 +185,7 @@ def save_file_identifiers(identifiers: Dict[str, str]) -> None:
         # {user: [id1, id2]}
 
 
-def user_has_no_space(file, user):
+def user_has_no_space(file: File, user: str) -> bool:
     if limitations_on and user in used_space:
         if file.get_size() + used_space[user] > int(config['limits']['granted_space']):
             return True
@@ -194,7 +194,7 @@ def user_has_no_space(file, user):
     return False
 
 
-def generate_tmp_directory():
+def generate_tmp_directory() -> os.PathLike:
     return tempfile.mkdtemp(dir=config['paths']['save_user_files'])
 
 
@@ -209,7 +209,7 @@ file_parser.add_argument('file[]', location='files', type=FileStorage, required=
                     200: 'OK'})
 @api.expect(file_parser)
 class SendFilesEndpoint(Resource):
-    def post(self):
+    def post(self) -> Union[Tuple[Dict[str, Union[str, int]], int], Dict[str, Any]]:
         """Send files in pdb, sdf or cif format"""
         files = request.files.getlist('file[]')
         if not files:
@@ -225,10 +225,10 @@ class SendFilesEndpoint(Resource):
             file = File(file, tmpdir)
 
             if not file.has_valid_suffix():
-                response = ErrorResponse(
-                    message=f'File is in unsupported format. Send only .sdf, .mol2, .cif and .pdb files.',
-                    status_code=400,
-                    request=request)
+                response = ErrorResponse(message=f'File is in unsupported format. '
+                                                 f'Send only .sdf, .mol2, .cif and .pdb files.',
+                                         status_code=400,
+                                         request=request)
                 response.log(simple_logger)
                 return response.json
 
@@ -240,7 +240,7 @@ class SendFilesEndpoint(Resource):
 
             file.convert_line_endings_to_unix_style()
             uploaded_files[file.get_id()] = file.get_path()
-            user_response[file.get_filename()] = file.get_id()
+            user_response[file.get_filename()[:-4]] = file.get_id()
 
         save_file_identifiers(uploaded_files)
 
@@ -259,7 +259,7 @@ class SendFilesEndpoint(Resource):
             return response.json
 
 
-def send_pdb_request(pdb_id):
+def send_pdb_request(pdb_id: str) -> Dict[str, Any]:
     successfull = True
     error_message = None
     r = requests.get('https://files.rcsb.org/download/' + pdb_id + '.cif', stream=True)
@@ -283,7 +283,7 @@ pid_parser.add_argument('pid[]', type=str, help='PDB ID', action='append', requi
 @api.expect(pid_parser)
 class PdbID(Resource):
     # decorators = [limiter.shared_limit("100/hour", scope="upload")]
-    def post(self):
+    def post(self) -> Union[Tuple[Dict[str, Union[str, int]], int], Dict[str, Any]]:
         """Specify PDB ID of your structure."""
         pdb_identifiers = request.args.getlist('pid[]')
         if not pdb_identifiers:
@@ -322,7 +322,7 @@ class PdbID(Resource):
                 break
 
             uploaded_files[file.get_id()] = file.get_path()
-            user_response[file.get_filename()] = file.get_id()
+            user_response[file.get_filename()[:-4]] = file.get_id()
 
         save_file_identifiers(uploaded_files)
 
@@ -341,7 +341,7 @@ class PdbID(Resource):
             return response.json
 
 
-def send_pubchem_request(cid):
+def send_pubchem_request(cid: str) -> Dict[str, Any]:
     successfull = True
     error_message = None
     r = requests.get('https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/CID/' +
@@ -368,7 +368,7 @@ pubchem_parser.add_argument('cid[]', type=int, help='Compound CID', action='appe
 @api.expect(pubchem_parser)
 class PubchemCID(Resource):
     # decorators = [limiter.shared_limit("100/hour", scope="upload")]
-    def post(self):
+    def post(self) -> Union[Tuple[Dict[str, Union[str, int]], int], Dict[str, Any]]:
         """Specify Pubchem CID of your structure."""
         cid_identifiers = request.args.getlist('cid[]')
         if not cid_identifiers:
@@ -407,7 +407,7 @@ class PubchemCID(Resource):
                 break
 
             uploaded_files[file.get_id()] = file.get_path()
-            user_response[file.get_filename()] = file.get_id()
+            user_response[file.get_filename()[:-4]] = file.get_id()
 
         save_file_identifiers(uploaded_files)
 
@@ -426,7 +426,7 @@ class PubchemCID(Resource):
             return response.json
 
 
-def release_space(file_size, user):
+def release_space(file_size: float, user: str) -> None:
     if limitations_on:
         if used_space[user] - file_size <= 0:
             del used_space[user]
@@ -447,7 +447,7 @@ remove_file_parser.add_argument('structure_id',
 @api.expect(remove_file_parser)
 @remove_file.route('')
 class RemoveFile(Resource):
-    def post(self):
+    def post(self) -> Union[Tuple[Dict[str, Union[str, int]], int], Dict[str, Any]]:
         """Remove file specified by structure_id"""
         structure_id = request.args.get('structure_id')
         if not structure_id:
@@ -491,7 +491,7 @@ def convert_pqr_to_pdb(pqr_file: os.PathLike, pdb_file: os.PathLike) -> None:
         raise ValueError('Error converting from .pqr to .pdb format using openbabel.')
 
 
-def run_pqr(noopt, ph, input_file, path_to_pqr):
+def run_pqr(noopt: bool, ph: str, input_file: os.PathLike, path_to_pqr: os.PathLike) -> bool:
     successfull = True
     try:
         if noopt:
@@ -528,7 +528,7 @@ hydro_parser.add_argument('noopt',
                     200: 'OK'})
 @api.expect(hydro_parser)
 class AddHydrogens(Resource):
-    def post(self):
+    def post(self) -> Union[Tuple[Dict[str, Union[str, int]], int], Dict[str, Union[str, int]]]:
         """WIP: Might not work as expected - works just for structures in .pdb format!
         Add hydrogens to your structure represented by an structure identifier"""
         structure_id = request.args.get('structure_id')
@@ -580,7 +580,7 @@ class AddHydrogens(Resource):
         return response.json
 
 
-def create_zip_file(folder):
+def create_zip_file(folder: pathlib.Path) -> BytesIO:
     stream = BytesIO()
     with ZipFile(stream, 'w') as zf:
         for file in folder.glob('*'):
@@ -626,10 +626,10 @@ def get_bool_value(original: Union[None, str]) -> bool:
     return original == 'true'
 
 
-def get_dict_atoms_count(atoms_list_count):
+def get_individual_atoms_count(atoms_count: List[Tuple[str, int]]) -> Dict[str, int]:
     """Get dictionary of atoms count - atom as key, count as value"""
     result = {}
-    for atom_count in atoms_list_count:
+    for atom_count in atoms_count:
         atom, count = atom_count
         result[atom] = count
     return result
@@ -659,7 +659,7 @@ info_parser.add_argument('ignore_water',
                     200: 'OK'})
 @api.expect(info_parser)
 class GetInfo(Resource):
-    def get(self):
+    def get(self) -> Union[Tuple[Dict[str, Union[str, int]], int], Dict[str, Any]]:
         """Get info about your molecule."""
         structure_id = request.args.get('structure_id')
         read_hetatm = request.args.get('read_hetatm')
@@ -680,8 +680,8 @@ class GetInfo(Resource):
             response.log(simple_logger)
             return response.json
 
-        molecules_count, atom_count, atoms_list_count = chargefw2_python.get_info(molecules)
-        individual_atoms_count = get_dict_atoms_count(atoms_list_count)
+        molecules_count, atom_count, atoms_count = chargefw2_python.get_info(molecules)
+        individual_atoms_count = get_individual_atoms_count(atoms_count)
 
         response = OKResponse(data={'Number of molecules': molecules_count,
                                     'Number of atoms': atom_count,
@@ -715,7 +715,7 @@ suit_parser.add_argument('ignore_water',
                     200: 'OK'})
 @api.expect(suit_parser)
 class SuitableMethods(Resource):
-    def get(self):
+    def get(self) -> Union[Tuple[Dict[str, Union[str, int]], int], Dict[str, List[Dict[str, List[str]]]]]:
         """Get calculation methods suitable for your molecule."""
         structure_id = request.args.get('structure_id')
         read_hetatm = request.args.get('read_hetatm')
@@ -742,7 +742,7 @@ class SuitableMethods(Resource):
 
 
 @calculate_time
-def round_charges(charges):
+def round_charges(charges: Dict[str, Union[str, List[str]]]) -> List[Dict[str, Union[str, List[str]]]]:
     rounded_charges = []
     for key in charges.keys():
         tmp = {}
@@ -752,29 +752,29 @@ def round_charges(charges):
 
 
 class CalculationResult:
-    def __init__(self, calc_time, charges, method, parameters):
+    def __init__(self, calc_time: float, charges: List[Dict[str, Union[str, List[str]]]], method: str, parameters: str):
         self._calc_time = calc_time
         self._charges = charges
         self._method = method
         self._parameters = parameters
 
     @property
-    def calc_time(self):
+    def calc_time(self) -> float:
         return self._calc_time
 
-    def get_charges(self):
+    def get_charges(self) -> List[Dict[str, Union[str, List[str]]]]:
         return self._charges
 
     @property
-    def method(self):
+    def method(self) -> str:
         return self._method
 
     @property
-    def parameters(self):
+    def parameters(self) -> str:
         return self._parameters
 
 
-def calculate_charges(molecules, method, parameters):
+def calculate_charges(molecules: chargefw2_python.Molecules, method: str, parameters: str) -> CalculationResult:
     calc_start = time.perf_counter()
     charges = chargefw2_python.calculate_charges(molecules, method, parameters)
     calc_end = time.perf_counter()
@@ -818,7 +818,7 @@ calc_parser.add_argument('ignore_water',
 @api.expect(calc_parser)
 class CalculateCharges(Resource):
     @calculate_time
-    def get(self):
+    def get(self) -> Union[Tuple[Dict[str, Union[str, int]], int], Dict[str, Any]]:
         structure_id = request.args.get('structure_id')
         method = request.args.get('method')
         parameters = request.args.get('parameters')
@@ -865,8 +865,8 @@ class CalculateCharges(Resource):
 
         # try:
         if config['limits']['on'] == 'True':
-            if request.remote_addr in long_calculations and long_calculations[request.remote_addr] >= int(
-                    config['limits']['max_long_calc']):
+            if request.remote_addr in long_calculations and \
+                    long_calculations[request.remote_addr] >= int(config['limits']['max_long_calc']):
                 response = ErrorResponse(message=f'It is allowed to perform only {config["limits"]["max_long_calc"]} '
                                                  f'time demanding calculations per day.',
                                          request=request)
@@ -887,9 +887,9 @@ class CalculateCharges(Resource):
         suffix = structure.get_structure_file()[-3:]
         molecules_count, atom_count, atoms_list_count = chargefw2_python.get_info(molecules)
 
-        response = OKResponse(
-            data={'charges': result.get_charges(), 'method': result.method, 'parameters': result.parameters},
-            request=request)
+        response = OKResponse(data={'charges': result.get_charges(), 'method': result.method,
+                                    'parameters': result.parameters},
+                              request=request)
         if not request.args.get('method'):
             response.log(simple_logger,
                          time=result.calc_time,
@@ -908,22 +908,22 @@ class CalculateCharges(Resource):
 
 
 class Limits:
-    def __init__(self, user):
+    def __init__(self, user: str):
         self._user = user
 
-    def get_users_files_info(self):
+    def get_users_files_info(self) -> str:
         """Returns id, file name and info when the file was lastly modified for particular use"""
         files_info = []
         ids = user_id_manager[self._user]
-        for id in ids:
-            path_to_file = pathlib.Path(file_manager[id])
+        for _id in ids:
+            path_to_file = pathlib.Path(file_manager[_id])
             file_name = path_to_file.name
-            files_info.append(f'ID: {id}, '
+            files_info.append(f'ID: {_id}, '
                               f'name of file: {file_name}, '
                               f'file was last modified before {round(time.time() - path_to_file.stat().st_mtime, 2)}s.')
         return '\n'.join(files_info)
 
-    def get_limits(self):
+    def get_limits(self) -> Dict[str, Any]:
         if config['limits']['on'] == 'True':
             file_size = int(config['limits']['file_size'])
             max_long_calc = int(config['limits']['max_long_calc'])
@@ -942,7 +942,8 @@ class Limits:
                             'Your files': files_info,
                             'Removing files': f'Files that was not modified '
                                               f'for more than {int(config["remove_tmp"]["older_than"])}s '
-                                              f'are removed once every {int(config["remove_tmp"]["every_x_seconds"])}s.',
+                                              f'are removed once every '
+                                              f'{int(config["remove_tmp"]["every_x_seconds"])}s.',
                             'Granted space': int(config['limits']['granted_space']),
                             'Your used space': used_space.get(self._user, 0)})
         return jsonify({'message': 'No restrictions turned on'})
@@ -950,17 +951,17 @@ class Limits:
 
 @get_limits.route('')
 class GetLimitsEndpoint(Resource):
-    def get(self):
+    def get(self) -> Dict[str, Any]:
         limits = Limits(request.remote_addr)
         return limits.get_limits()
 
 
-def add_long_calc(dict, user_add):
+def add_long_calc(long_calc: Dict[Any, Any], user_add: str) -> None:
     """Add long calculation to user"""
-    dict[user_add] = dict.get(user_add, 0) + 1
+    long_calc[user_add] = long_calc.get(user_add, 0) + 1
 
 
-def increase_limit():
+def increase_limit() -> None:
     to_delete = []
     for user in long_calculations:
         if long_calculations[user] > 1:
@@ -972,7 +973,7 @@ def increase_limit():
 
 
 class RepeatTimer(Timer):
-    def run(self):
+    def run(self) -> None:
         while not self.finished.wait(self.interval):
             self.function(*self.args, **self.kwargs)
 
@@ -991,7 +992,7 @@ file_manager = manager.dict()  # id: path_to_file
 user_id_manager = manager.dict()  # {user:[id1, id2]}
 
 
-def delete_id_from_user(identifier):
+def delete_id_from_user(identifier: str) -> None:
     for user in user_id_manager:
         if identifier in user_id_manager[user]:
             user_id_manager[user].remove(identifier)
@@ -1000,7 +1001,7 @@ def delete_id_from_user(identifier):
             break
 
 
-def delete_old_records():
+def delete_old_records() -> None:
     identifiers = file_manager.keys()
     for identifier in identifiers:
         path_to_id = pathlib.Path(file_manager[identifier])
@@ -1025,4 +1026,3 @@ remove_tmp.start()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0')
-
