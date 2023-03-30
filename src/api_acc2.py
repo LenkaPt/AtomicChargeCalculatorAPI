@@ -19,7 +19,7 @@ from zipfile import ZipFile
 
 from Responses import OKResponse, ErrorResponse
 from Structures import Structure, Method
-from Logger import Logger
+from Logger import Logger, logging_process
 from File import File
 
 config = configparser.ConfigParser()
@@ -124,18 +124,10 @@ def calculate_time(func: Callable) -> Callable:
     return inner
 
 
-def logging_process(queue: Queue) -> None:
-    error_logger = Logger('error', file=config['paths']['log_error'], level=logging.ERROR)
-    stat_logger = Logger('statistics', file=config['paths']['save_statistics_file'], level=logging.INFO)
-    for message in iter(queue.get, None):
-        error_logger.handle(message)
-        stat_logger.handle(message)
-        print(f'Logger queue: {queue.qsize()}')
-
-
 manager = Manager()
 queue = manager.Queue()
-log_process = Process(target=lambda: logging_process(queue))
+log_process = Process(target=lambda: logging_process(queue, config['paths']['log_error'],
+                                                     config['paths']['save_statistics_file']))
 log_process.start()
 simple_logger = Logger('simple', logging.INFO, queue)
 
@@ -200,8 +192,6 @@ def generate_tmp_directory() -> os.PathLike:
 
 file_parser = api.parser()
 file_parser.add_argument('file[]', location='files', type=FileStorage, required=True)
-
-
 @send_files.route('')
 @api.doc(responses={404: 'No file sent',
                     400: 'Unsupported format',
@@ -259,10 +249,10 @@ class SendFilesEndpoint(Resource):
             return response.json
 
 
-def send_pdb_request(pdb_id: str) -> Dict[str, Any]:
+def send_request(url: str)  -> Dict[str, Any]:
     successfull = True
     error_message = None
-    r = requests.get('https://files.rcsb.org/download/' + pdb_id + '.cif', stream=True)
+    r = requests.get(url, stream=True)
     try:
         r.raise_for_status()
     except requests.exceptions.HTTPError as e:
@@ -271,11 +261,15 @@ def send_pdb_request(pdb_id: str) -> Dict[str, Any]:
     return {'successfull': successfull, 'response': r, 'error_message': error_message}
 
 
+def send_pdb_request(pdb_id: str) -> Dict[str, Any]:
+    url = 'https://files.rcsb.org/download/' + pdb_id + '.cif'
+    response = send_request(url)
+    return response
+
+
 # parser for query arguments
 pid_parser = reqparse.RequestParser()
 pid_parser.add_argument('pid[]', type=str, help='PDB ID', action='append', required=True)
-
-
 @pid.route('')
 @api.doc(responses={404: 'No PDB iD specified or PDB ID does not exist',
                     200: 'OK',
@@ -342,25 +336,15 @@ class PdbID(Resource):
 
 
 def send_pubchem_request(cid: str) -> Dict[str, Any]:
-    successfull = True
-    error_message = None
-    r = requests.get('https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/CID/' +
-                     cid +
-                     '/record/SDF/?record_type=3d&response_type=save&response_basename=Conformer3D_CID_' +
-                     cid, stream=True)
-    try:
-        r.raise_for_status()
-    except requests.exceptions.HTTPError as e:
-        successfull = False
-        error_message = e
-    return {'successfull': successfull, 'response': r, 'error_message': error_message}
+    url = f'https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/CID/{cid}' \
+          f'/record/SDF/?record_type=3d&response_type=save&response_basename=Conformer3D_CID_{cid}'
+    response = send_request(url)
+    return response
 
 
 # parser for query arguments
 pubchem_parser = reqparse.RequestParser()
 pubchem_parser.add_argument('cid[]', type=int, help='Compound CID', action='append', required=True)
-
-
 @cid.route('')
 @api.doc(responses={404: 'No Pubchem compound ID specified or compound ID does not exist',
                     200: 'OK',
@@ -439,8 +423,6 @@ remove_file_parser.add_argument('structure_id',
                                 type=str,
                                 help='Obtained structure identifier of your structure',
                                 required=True)
-
-
 @api.doc(responses={404: 'Structure ID not specified',
                     400: 'Structure ID does not exist / Structure not in correct format',
                     200: 'OK'})
@@ -519,8 +501,6 @@ hydro_parser.add_argument('noopt',
                           help='Use in case that you would not like to '
                                'optimize hydrogen bonds.\n'
                                'Default: True')
-
-
 @hydrogens.route('')
 @api.doc(responses={404: 'Structure ID not specified',
                     400: 'Structure ID does not exist / Structure not in correct format',
@@ -595,8 +575,6 @@ file_parser.add_argument('structure_id',
                          type=str,
                          help='Obtained structure identifier of your structure',
                          required=True)
-
-
 @get_structure_file.route('')
 @api.doc(responses={404: 'Structure ID not specified',
                     400: 'Structure ID does not exist / Structure not in correct format'})
@@ -651,8 +629,6 @@ info_parser.add_argument('ignore_water',
                          help='Use in case that you would like to ignore '
                               'water molecules.\n'
                               'Default: False')
-
-
 @get_info.route('')
 @api.doc(responses={404: 'Structure ID not specified',
                     400: 'Structure ID does not exist or input file is not correct',
@@ -707,8 +683,6 @@ suit_parser.add_argument('ignore_water',
                          help='Use in case that you would like to ignore '
                               'water molecules.\n'
                               'Default: False')
-
-
 @suitable_methods.route('')
 @api.doc(responses={404: 'Structure ID not specified',
                     400: 'Structure ID does not exist or input file is not correct',
@@ -805,8 +779,6 @@ calc_parser.add_argument('ignore_water',
                          help='Use in case that you would like to ignore '
                               'water molecules.\n'
                               'Default: False')
-
-
 @calc_charges.route('')
 @api.doc(responses={404: 'Structure ID not specified',
                     400: 'Structure ID does not exist/'

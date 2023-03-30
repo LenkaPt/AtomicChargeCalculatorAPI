@@ -2,7 +2,16 @@ import logging
 import os
 from logging.handlers import QueueHandler
 from multiprocessing import Queue
-from typing import Optional
+from typing import Union
+
+
+def logging_process(queue: Queue, error_file: Union[os.PathLike, str], stat_file: Union[os.PathLike, str]) -> None:
+    error_logger = Logger('error', file=error_file, level=logging.ERROR)
+    stat_logger = Logger('statistics', file=stat_file, level=logging.INFO)
+    for message in iter(queue.get, None):
+        error_logger.handle(message)
+        stat_logger.handle(message)
+        print(f'Logger queue: {queue.qsize()}')
 
 
 class LevelFilter(logging.Filter):
@@ -14,17 +23,17 @@ class LevelFilter(logging.Filter):
 
 
 class Logger:
-    def __init__(self, _type: str, level: int, queue: Queue = None, file: Optional[str] = None):
-        if _type == 'error':
+    def __init__(self, type: str, level: int, queue: Queue = None, file: os.PathLike = None):
+        if type == 'error':
             self._logger = self.get_error_logger(level=level, file=file)
-        elif _type == 'statistics':
+        elif type == 'statistics':
             self._logger = self.get_statistics_logger(level=level, file=file)
-        elif _type == 'simple':
+        elif type == 'simple':
             self._logger = self.get_simple_logger(queue)
         else:
             raise ValueError('Wrong type of logger')
 
-    def setup_logger(self, name: str, log_file: str, level: int) -> logging.Logger:
+    def setup_logger(self, name: str, log_file: os.PathLike, level: int) -> logging.Logger:
         formatter = logging.Formatter(f'%(asctime)s'
                                       f'%(process)d, '
                                       f'%(message)s')
@@ -38,10 +47,10 @@ class Logger:
 
         return logger
 
-    def get_error_logger(self, file: str, level: int = logging.ERROR) -> logging.Logger:
+    def get_error_logger(self, file: os.PathLike, level: int = logging.ERROR) -> logging.Logger:
         return self.setup_logger('error_logger', file, level)
 
-    def get_statistics_logger(self, file: str, level=logging.INFO) -> logging.Logger:
+    def get_statistics_logger(self, file: os.PathLike, level=logging.INFO) -> logging.Logger:
         return self.setup_logger('collect_statistics_logger', file, level)
 
     def get_simple_logger(self, queue: Queue) -> logging.Logger:
