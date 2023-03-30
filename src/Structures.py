@@ -20,8 +20,7 @@ class Structure:
             return self._file_manager[self._structure_id]
         return None
 
-    # TODO return Molecules
-    def get_molecules(self, read_hetatm: bool = True, ignore_water: bool = False):
+    def get_molecules(self, read_hetatm: bool = True, ignore_water: bool = False) -> chargefw2_python.Molecules:
         path_to_file = self.get_structure_file()
         if path_to_file is None:
             raise ValueError(f'Structure ID {self._structure_id} does not exist.')
