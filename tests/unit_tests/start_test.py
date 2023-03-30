@@ -37,10 +37,10 @@ max_long_calc = args.max_long_calc
 granted_space = args.granted_space
 
 valid_id = requests.post(f'http://{url}/send_files',
-                         files={'file[]': open(valid_file)}).json()['structure_ids'][valid_file]
+                         files={'file[]': open(valid_file)}).json()['structure_ids'][valid_file[:-4]]
 invalid_id = requests.post(f'http://{url}/send_files',
-                         files={'file[]': open(invalid_file)}).json()['structure_ids'][invalid_file]
-sdf_id = requests.post(f'http://{url}/pubchem_cid', params={'cid[]': cid}).json()['structure_ids'][cid + '.sdf']
+                         files={'file[]': open(invalid_file)}).json()['structure_ids'][invalid_file[:-4]]
+sdf_id = requests.post(f'http://{url}/pubchem_cid', params={'cid[]': cid}).json()['structure_ids'][cid]
 subprocess.run(['pytest', '--url', url,
                 '--valid_id', valid_id,
                 '--invalid_id', invalid_id,

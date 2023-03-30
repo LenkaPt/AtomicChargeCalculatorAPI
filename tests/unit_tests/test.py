@@ -2,39 +2,6 @@ import requests
 import pytest
 
 
-# @pytest.fixture(scope='module')
-# def url(request):
-#     url = request.config.getoption('--url')
-#     return url
-#
-# @pytest.fixture(scope='module')
-# def valid_id(request):
-#     valid_id = request.config.getoption('--valid_id')
-#     return valid_id
-#
-#
-# @pytest.fixture(scope='module')
-# def invalid_id(request):
-#     invalid_id = request.config.getoption('--invalid_id')
-#     return invalid_id
-# url = None
-# valid_id = None
-# invalid_id = None
-#
-# def test_setup_env(request):
-#     global url
-#     url = request.config.getoption('--url')
-#     assert url != None
-#
-#     global valid_id
-#     valid_id = request.config.getoption('--valid_id')
-#     assert valid_id != None
-#
-#     global invalid_id
-#     invalid_id = request.config.getoption('--invalid_id')
-#     assert invalid_id != None
-
-
 def available_methods(url):
     return requests.get(f'http://{url}/available_methods')
 
