@@ -3,15 +3,17 @@ import requests
 import argparse
 import configparser
 
-default_valid_file = '1ner.pdb'
-default_invalid_file = '6a5j.pdb'
-default_file_in_invalid_format = 'text.txt'
-default_big_file = '4wfb.pdb'
-default_url = '78.128.250.156:8080/'
-default_cid = '1'
-default_limit_file = 'api.ini'
 
 config = configparser.ConfigParser()
+config.read('default_tests_values.ini')
+default_valid_file = config['files']['valid_file']
+default_invalid_file = config['files']['invalid_file']
+default_file_in_invalid_format = config['files']['file_in_invalid_format']
+default_big_file = config['files']['big_file']
+default_url = config['urls']['dev_url']
+default_cid = config['ids']['cid']
+default_limit_file = config['limit_file']['default']
+
 config.read(default_limit_file)
 default_max_long_calc = config['limits']['max_long_calc']
 default_granted_space = config['limits']['granted_space']
