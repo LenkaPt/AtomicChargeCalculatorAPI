@@ -62,8 +62,10 @@ def test_calculate_charges(structure_id, method, parameters, expected, url, vali
     assert 'Method eem requires parameters' in calculate_charges(valid_id, 'eem', None, url).json()['message']
     assert 'Invalid common parameters provided' in \
            calculate_charges(valid_id, 'denr', 'EEM_00_NEEMP_ccd2016_npa', url).json()['message']
-    assert 'OK' in calculate_charges(valid_id, 'eqeq', 'gdfnxrg', url).json()['message']   # eqeq ignores parameters, because it does not require one
-    assert 'OK' in calculate_charges(valid_id, 'eqeq', 'DENR_00_from_QEq', url).json()['message']  # eqeq ignores parameters, because it does not require one
+    # eqeq ignores parameters, because it does not require one
+    assert 'OK' in calculate_charges(valid_id, 'eqeq', 'gdfnxrg', url).json()['message']
+    # eqeq ignores parameters, because it does not require one
+    assert 'OK' in calculate_charges(valid_id, 'eqeq', 'DENR_00_from_QEq', url).json()['message']
     assert 'OK' in calculate_charges(valid_id, 'eem', 'EEM_00_NEEMP_ccd2016_npa', url).json()['message']
     assert "Selected parameters doesn't cover the whole molecule set" in \
            calculate_charges(valid_id, 'abeem', 'ABEEM_00_original', url).json()['message']
@@ -97,7 +99,6 @@ def test_add_hydrogens(url, valid_id, invalid_id, sdf_id):
     assert 'Error occurred when using pdb2pqr30' in add_hydrogens(invalid_id, url).json()['message']
 
 
-
 def get_info(identifier, url):
     return requests.get(f'http://{url}/get_info', params={'structure_id': identifier})
 
@@ -109,7 +110,7 @@ def get_info(identifier, url):
 def test_get_info(structure_id, expected, url, valid_id):
     assert 'OK' in get_info(valid_id, url).json()["message"]
 
-    response= get_info(structure_id, url).json()
+    response = get_info(structure_id, url).json()
     assert expected in response["message"]
 
 

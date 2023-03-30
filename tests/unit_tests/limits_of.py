@@ -1,6 +1,7 @@
 import requests
 import pytest
 
+
 def send_file(file, url):
     return requests.post(f'http://{url}/send_files',
                          files={'file[]': open(file)})
@@ -27,6 +28,7 @@ def calculate_charges(structure_id, method, parameters, url):
 def pdb_id(identifier, url):
     return requests.post(f'http://{url}/pdb_id', params={'pid[]': identifier})
 
+
 @pytest.mark.parametrize('structure_id, expected', [
     ('1ner', 'OK'),
     ('4wfb', 'OK'),
@@ -40,6 +42,7 @@ def test_pdb_id(structure_id, expected, url):
 
 def get_limits(url):
     return requests.get(f'http://{url}/get_limits')
+
 
 def test_get_limits(url):
     response = get_limits(url).json()

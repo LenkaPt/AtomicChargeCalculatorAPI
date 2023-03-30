@@ -19,9 +19,9 @@ def calculate_charges(structure_id, method, parameters, url):
                                 'method': method,
                                 'parameters': parameters})
 
+
 def pdb_id(identifier, url):
     return requests.post(f'http://{url}/pdb_id', params={'pid[]': identifier})
-
 
 
 @pytest.mark.parametrize('structure_id, expected', [
@@ -37,6 +37,7 @@ def test_pdb_id(structure_id, expected, url):
 
 def get_limits(url):
     return requests.get(f'http://{url}/get_limits')
+
 
 def test_get_limits(url):
     response = get_limits(url).json()
