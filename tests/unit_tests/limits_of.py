@@ -9,7 +9,7 @@ def send_file(file, url):
 
 def test_send_file(url, valid_file, invalid_format, big_file):
     assert 'OK' in send_file(valid_file, url).json()['message']
-    assert 'Unsupported format' in send_file(invalid_format, url).json()['message']
+    assert 'unsupported format' in send_file(invalid_format, url).json()['message']
     assert 'OK' in send_file(big_file, url).json()['message']
 
 
