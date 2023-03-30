@@ -2,6 +2,7 @@ import subprocess
 import requests
 import argparse
 import configparser
+from pathlib import Path
 
 
 config = configparser.ConfigParser()
@@ -41,9 +42,9 @@ max_long_calc = args.max_long_calc
 granted_space = args.granted_space
 
 valid_id = requests.post(f'http://{url}/send_files',
-                         files={'file[]': open(valid_file)}).json()['structure_ids'][valid_file[:-4]]
+                         files={'file[]': open(valid_file)}).json()['structure_ids'][Path(valid_file).stem]
 invalid_id = requests.post(f'http://{url}/send_files',
-                           files={'file[]': open(invalid_file)}).json()['structure_ids'][invalid_file[:-4]]
+                           files={'file[]': open(invalid_file)}).json()['structure_ids'][Path(invalid_file).stem]
 sdf_id = requests.post(f'http://{url}/pubchem_cid', params={'cid[]': cid}).json()['structure_ids'][cid]
 subprocess.run(['pytest', '--url', url,
                 '--valid_id', valid_id,
