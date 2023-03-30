@@ -1,16 +1,19 @@
 import logging
+import os
 from logging.handlers import QueueHandler
+from multiprocessing import Queue
+
 
 class LevelFilter(logging.Filter):
-    def __init__(self, level):
+    def __init__(self, level: int) -> None:
         self.__level = level
 
-    def filter(self, logRecord):
+    def filter(self, logRecord: logging.LogRecord) -> bool:
         return logRecord.levelno == self.__level
 
 
 class Logger:
-    def __init__(self, type, level, queue=None, file=None):
+    def __init__(self, type: str, level: int, queue: Queue = None, file: os.PathLike = None):
         if type == 'error':
             self._logger = self.get_error_logger(level=level, file=file)
         elif type == 'statistics':
@@ -20,7 +23,7 @@ class Logger:
         else:
             raise ValueError('Wrong type of logger')
 
-    def setup_logger(self, name, log_file, level):
+    def setup_logger(self, name: str, log_file: os.PathLike, level: int) -> logging.Logger:
         formatter = logging.Formatter(f'%(asctime)s'
                                       f'%(process)d, '
                                       f'%(message)s')
@@ -34,20 +37,20 @@ class Logger:
 
         return logger
 
-    def get_error_logger(self, file, level=logging.ERROR):
+    def get_error_logger(self, file: os.PathLike, level: int = logging.ERROR) -> logging.Logger:
         return self.setup_logger('error_logger', file, level)
 
-    def get_statistics_logger(self, file, level=logging.INFO):
-        return self.setup_logger('collect_statistics_logger',file, level)
+    def get_statistics_logger(self, file: os.PathLike, level=logging.INFO) -> logging.Logger:
+        return self.setup_logger('collect_statistics_logger', file, level)
 
-    def get_simple_logger(self, queue):
+    def get_simple_logger(self, queue: Queue) -> logging.Logger:
         logger = logging.getLogger('api')
         # add a handler that uses the shared queue
         logger.addHandler(QueueHandler(queue))
         logger.setLevel(logging.INFO)
         return logger
 
-    def log_statistics_message(self, remote_add, endpoint_name, **kwargs):
+    def log_statistics_message(self, remote_add: str, endpoint_name: str, **kwargs) -> None:
         result_message = []
         result_message.append(f'{remote_add}')
         result_message.append(f'endpoint_name={endpoint_name}')
@@ -57,7 +60,7 @@ class Logger:
         message = ', '.join(result_message)
         self._logger.info(message)
 
-    def log_error_message(self, remote_add, endpoint_name, error_message, **kwargs):
+    def log_error_message(self, remote_add: str, endpoint_name: str, error_message: str, **kwargs) -> None:
         result_message = []
         result_message.append(f'{remote_add}')
         result_message.append(f'endpoint_name={endpoint_name}')
