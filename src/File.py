@@ -2,11 +2,13 @@ import subprocess
 import pathlib
 import os
 import tempfile
-from typing import TextIO, BinaryIO, Union
+from typing import Union, Any
+from werkzeug.datastructures import FileStorage
+from configparser import ConfigParser
 
 
 class File:
-    def __init__(self, file: Union[TextIO, str], path_to_directory: Union[str, os.PathLike]):
+    def __init__(self, file: Union[str, FileStorage], path_to_directory: Union[str, os.PathLike]):
         self._file = file
         if isinstance(file, str):
             self._filename = file
@@ -41,7 +43,7 @@ class File:
     def get_path(self) -> Union[str, os.PathLike]:
         return self._path_to_file
 
-    def write_file(self, r: BinaryIO, config) -> bool:
+    def write_file(self, r: Any, config: ConfigParser) -> bool:
         file_size = 0
         with open(self._path_to_file, 'wb') as fd:
             for chunk in r.iter_content(chunk_size=128):
