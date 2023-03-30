@@ -10,7 +10,6 @@ import requests
 import subprocess
 import time
 from datetime import date
-from threading import Timer
 import configparser
 import pathlib
 import logging
@@ -21,6 +20,7 @@ from Responses import OKResponse, ErrorResponse
 from Structures import Structure, Method
 from Logger import Logger, logging_process
 from File import File
+from remove_old_files import RepeatTimer, delete_id_from_user, delete_old_records
 
 config = configparser.ConfigParser()
 config.read('/home/api_dev/api_dev/utils/api.ini')
@@ -455,7 +455,7 @@ class RemoveFile(Resource):
 
         # remove from file_manager and user_id_manager
         del file_manager[structure_id]
-        delete_id_from_user(structure_id)
+        delete_id_from_user(structure_id, user_id_manager)
         # release space
         release_space(file.get_size(), request.remote_addr)
         file.remove()
@@ -944,12 +944,6 @@ def increase_limit() -> None:
         del long_calculations[user]
 
 
-class RepeatTimer(Timer):
-    def run(self) -> None:
-        while not self.finished.wait(self.interval):
-            self.function(*self.args, **self.kwargs)
-
-
 limitations_on = False
 
 # limits in api.ini are enabled
@@ -964,36 +958,9 @@ file_manager = manager.dict()  # id: path_to_file
 user_id_manager = manager.dict()  # {user:[id1, id2]}
 
 
-def delete_id_from_user(identifier: str) -> None:
-    for user in user_id_manager:
-        if identifier in user_id_manager[user]:
-            user_id_manager[user].remove(identifier)
-            if len(user_id_manager[user]) == 0:
-                del user_id_manager[user]
-            break
-
-
-def delete_old_records() -> None:
-    identifiers = file_manager.keys()
-    for identifier in identifiers:
-        path_to_id = pathlib.Path(file_manager[identifier])
-        file_is_old = time.time() - path_to_id.stat().st_mtime
-        if file_is_old > float(config['remove_tmp']['older_than']):
-            # delete id and path_to structure from file_manager
-            del file_manager[identifier]
-            # delete id from ids of user
-            delete_id_from_user(identifier)
-            with open(config['remove_tmp']['log'], mode='a') as output:
-                output.write(f'{date.today().strftime("%d/%m/%Y")}, '
-                             f'{time.strftime("%H:%M:%S", time.localtime())} '
-                             f'Removing {path_to_id}, '
-                             f'File was last modified before {round(file_is_old, 2)}s.\n')
-            os.remove(path_to_id)
-            path_to_id.parent.rmdir()
-
-
 # Remove file manager and tmp files repeatedly
-remove_tmp = RepeatTimer(float(config['remove_tmp']['every_x_seconds']), delete_old_records)
+remove_tmp = RepeatTimer(float(config['remove_tmp']['every_x_seconds']),
+                         delete_old_records(file_manager, user_id_manager))
 remove_tmp.start()
 
 if __name__ == '__main__':
