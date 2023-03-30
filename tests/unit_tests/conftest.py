@@ -3,7 +3,7 @@ import pytest
 
 def pytest_addoption(parser):
     parser.addoption(
-        '--url', action='store', default='http://localhost:8080', help='Base URL for the API tests'
+        '--url', action='store', help='Base URL for the API tests'
     )
     parser.addoption(
         '--valid_id', action='store', help='ID of correct file'
@@ -24,10 +24,10 @@ def pytest_addoption(parser):
         '--big_file', action='store', help='File larger than 10 Mb'
     )
     parser.addoption(
-        '--max_long_calc', action='store', help='How many long calculations is allowed to user', default=3
+        '--max_long_calc', action='store', help='How many long calculations is allowed to user'
     )
     parser.addoption(
-        '--granted_space', action='store', help='Space granted for user', default=200
+        '--granted_space', action='store', help='Space granted for user'
     )
 
 
