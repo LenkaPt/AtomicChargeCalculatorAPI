@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from flask import jsonify, request
 from typing import Any, Dict, Tuple, Union
 from Logger import Logger
-import logging
+from werkzeug.local import LocalProxy
 
 
 class Response(ABC):
@@ -16,7 +16,7 @@ class Response(ABC):
 
 
 class OKResponse(Response):
-    def __init__(self, data, request, status_code: int = 200, message: str = 'OK'):
+    def __init__(self, data: Dict[str, Any], request: LocalProxy, status_code: int = 200, message: str = 'OK'):
         super().__init__(status_code, message)
         self._data = data
         self._request = request
@@ -27,7 +27,7 @@ class OKResponse(Response):
                         'message': self._message,
                         **self._data})
 
-    def log(self, logger, **kwargs):
+    def log(self, logger: Logger, **kwargs) -> None:
         args = kwargs
         if self._request.args.get('method'):
             args['method'] = self._request.args.get('method')
@@ -50,9 +50,8 @@ class OKResponse(Response):
         logger.log_statistics_message(self._request.remote_addr, endpoint_name=self._request.path, **args)
 
 
-
 class ErrorResponse(Response):
-    def __init__(self, message: str, status_code: int = 404, request=request):
+    def __init__(self, message: str, status_code: int = 404, request: LocalProxy = request):
         super().__init__(status_code, message)
         self._request = request
 
@@ -61,6 +60,6 @@ class ErrorResponse(Response):
         return {'status_code': self._status_code,
                 'message': self._message}, self._status_code
 
-    def log(self, logger):
-        logger.log_error_message(self._request.remote_addr, endpoint_name=self._request.path, error_message=self._message,
-                                      status_code=self._status_code)
+    def log(self, logger: Logger) -> None:
+        logger.log_error_message(self._request.remote_addr, endpoint_name=self._request.path,
+                                 error_message=self._message, status_code=self._status_code)
