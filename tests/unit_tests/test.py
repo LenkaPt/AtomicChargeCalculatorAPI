@@ -31,8 +31,6 @@ def suitable_methods(structure_id, url):
 
 
 @pytest.mark.parametrize('structure_id, expected', [
-    # (valid_id, 'OK'),
-    # (invalid_id, 'No molecules were loaded'),
     (None, 'Structure ID not specified'),
     ('jhskhk', 'Structure ID jhskhk does not exist')
 ])
@@ -104,7 +102,6 @@ def get_info(identifier, url):
 
 
 @pytest.mark.parametrize('structure_id, expected', [
-    # (valid_file_identifier, "OK"),
     ('jsjsj', "does not exist")
 ])
 def test_get_info(structure_id, expected, url, valid_id):
