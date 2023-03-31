@@ -2,7 +2,7 @@ from flask import Flask, render_template, request, send_file, jsonify
 from flask_restx import Api, Resource, reqparse
 from werkzeug.datastructures import FileStorage
 from typing import Dict, Any, Union, List, Tuple, Callable
-from multiprocessing import Process, Manager, Queue
+from multiprocessing import Process, Manager
 import tempfile
 import os
 import chargefw2_python
@@ -960,8 +960,11 @@ user_id_manager = manager.dict()  # {user:[id1, id2]}
 
 # Remove file manager and tmp files repeatedly
 remove_tmp = RepeatTimer(float(config['remove_tmp']['every_x_seconds']),
-                         delete_old_records(file_manager, user_id_manager))
+                         lambda: delete_old_records(file_manager, user_id_manager,
+                                                    float(config['remove_tmp']['older_than']),
+                                                    config['remove_tmp']['log']))
 remove_tmp.start()
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0')

@@ -2,6 +2,8 @@ import os
 from threading import Timer
 from typing import Dict, Union
 import pathlib
+import time
+from datetime import date
 
 
 def delete_id_from_user(identifier: str, user_id_manager: Dict[str, str]) -> None:
@@ -13,17 +15,18 @@ def delete_id_from_user(identifier: str, user_id_manager: Dict[str, str]) -> Non
             break
 
 
-def delete_old_records(file_manager: Dict[str, Union[str, os.PathLike]], user_id_manager: Dict[str, str]) -> None:
+def delete_old_records(file_manager: Dict[str, Union[str, os.PathLike]], user_id_manager: Dict[str, str],
+                       config_older_than: float, log_file: Union[str, os.PathLike]) -> None:
     identifiers = file_manager.keys()
     for identifier in identifiers:
         path_to_id = pathlib.Path(file_manager[identifier])
         file_is_old = time.time() - path_to_id.stat().st_mtime
-        if file_is_old > float(config['remove_tmp']['older_than']):
+        if file_is_old > config_older_than:
             # delete id and path_to structure from file_manager
             del file_manager[identifier]
             # delete id from ids of user
             delete_id_from_user(identifier, user_id_manager)
-            with open(config['remove_tmp']['log'], mode='a') as output:
+            with open(log_file, mode='a') as output:
                 output.write(f'{date.today().strftime("%d/%m/%Y")}, '
                              f'{time.strftime("%H:%M:%S", time.localtime())} '
                              f'Removing {path_to_id}, '
