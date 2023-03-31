@@ -17,7 +17,7 @@ from io import BytesIO
 from zipfile import ZipFile
 
 from Responses import OKResponse, ErrorResponse
-from Structures import Structure, Method
+from Structures import Structure, Method, CalculationResult
 from Logger import Logger, logging_process
 from File import File
 from remove_old_files import RepeatTimer, delete_id_from_user, delete_old_records
@@ -723,29 +723,6 @@ def round_charges(charges: Dict[str, Union[str, List[str]]]) -> List[Dict[str, U
         tmp[key] = list(map(lambda x: round(x, 4), charges[key]))
         rounded_charges.append(tmp)
     return rounded_charges
-
-
-class CalculationResult:
-    def __init__(self, calc_time: float, charges: List[Dict[str, Union[str, List[str]]]], method: str, parameters: str):
-        self._calc_time = calc_time
-        self._charges = charges
-        self._method = method
-        self._parameters = parameters
-
-    @property
-    def calc_time(self) -> float:
-        return self._calc_time
-
-    def get_charges(self) -> List[Dict[str, Union[str, List[str]]]]:
-        return self._charges
-
-    @property
-    def method(self) -> str:
-        return self._method
-
-    @property
-    def parameters(self) -> str:
-        return self._parameters
 
 
 def calculate_charges(molecules: chargefw2_python.Molecules, method: str, parameters: str) -> CalculationResult:

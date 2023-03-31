@@ -88,3 +88,26 @@ class Method:
         if not self.is_method_available():
             raise ValueError(f'Method {self._method} is not available.')
         return chargefw2_python.get_available_parameters(self._method)
+
+
+class CalculationResult:
+    def __init__(self, calc_time: float, charges: List[Dict[str, Union[str, List[str]]]], method: str, parameters: str):
+        self._calc_time = calc_time
+        self._charges = charges
+        self._method = method
+        self._parameters = parameters
+
+    @property
+    def calc_time(self) -> float:
+        return self._calc_time
+
+    def get_charges(self) -> List[Dict[str, Union[str, List[str]]]]:
+        return self._charges
+
+    @property
+    def method(self) -> str:
+        return self._method
+
+    @property
+    def parameters(self) -> str:
+        return self._parameters
