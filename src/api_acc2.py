@@ -72,8 +72,7 @@ get_info = api.namespace('get_info',
 
 # namespace for adding hydrogens to structure
 hydrogens = api.namespace('add_hydrogens',
-                          description='WIP: Might not work as expected - works just fo structures in .pdb format! '
-                                      'Add hydrogens to your structure.')
+                          description='Add hydrogens to your structure.')
 
 get_structure_file = api.namespace('get_structure_file',
                                    description='Get structure file saved under specific ID.')
@@ -103,6 +102,7 @@ get_limits = api.namespace('get_limits',
 
 
 def calculate_time(func: Callable) -> Callable:
+    """Decorator for time measurement of function run"""
     def inner(*args, **kwargs):
         with open(config['paths']['log_time'], mode='a') as file:
             file.write(f'---STARTING---{func.__qualname__}\n')
@@ -169,6 +169,7 @@ class AvailableParametersEndpoint(Resource):
 
 
 def save_file_identifiers(identifiers: Dict[str, Union[str, os.PathLike]]) -> None:
+    """Assignes identifier of file to specific user and saves identifier and path to the file"""
     if request.remote_addr not in user_id_manager:
         user_id_manager[request.remote_addr] = manager.list()
     for identifier, path_to_file in identifiers.items():
@@ -178,6 +179,7 @@ def save_file_identifiers(identifiers: Dict[str, Union[str, os.PathLike]]) -> No
 
 
 def user_has_no_space(file: File, user: str) -> bool:
+    """Determines wheter specific user has some space available on disk"""
     if limitations_on and user in used_space:
         if file.get_size() + used_space[user] > int(config['limits']['granted_space']):
             return True
@@ -187,6 +189,7 @@ def user_has_no_space(file: File, user: str) -> bool:
 
 
 def generate_tmp_directory() -> os.PathLike:
+    """Generates directory for saving uploaded files"""
     return tempfile.mkdtemp(dir=config['paths']['save_user_files'])
 
 
@@ -250,6 +253,7 @@ class SendFilesEndpoint(Resource):
 
 
 def send_request(url: str)  -> Dict[str, Any]:
+    """Sends request to specific url"""
     successfull = True
     error_message = None
     r = requests.get(url, stream=True)
@@ -262,6 +266,7 @@ def send_request(url: str)  -> Dict[str, Any]:
 
 
 def send_pdb_request(pdb_id: str) -> Dict[str, Any]:
+    """Sends request to PDB database"""
     url = 'https://files.rcsb.org/download/' + pdb_id + '.cif'
     response = send_request(url)
     return response
@@ -276,7 +281,6 @@ pid_parser.add_argument('pid[]', type=str, help='PDB ID', action='append', requi
                     400: 'File bigger than 10 Mb'})
 @api.expect(pid_parser)
 class PdbID(Resource):
-    # decorators = [limiter.shared_limit("100/hour", scope="upload")]
     def post(self) -> Union[Tuple[Dict[str, Union[str, int]], int], Dict[str, Any]]:
         """Specify PDB ID of your structure."""
         pdb_identifiers = request.args.getlist('pid[]')
@@ -336,6 +340,7 @@ class PdbID(Resource):
 
 
 def send_pubchem_request(cid: str) -> Dict[str, Any]:
+    """Sends request to PubChem database"""
     url = f'https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/CID/{cid}' \
           f'/record/SDF/?record_type=3d&response_type=save&response_basename=Conformer3D_CID_{cid}'
     response = send_request(url)
@@ -351,7 +356,6 @@ pubchem_parser.add_argument('cid[]', type=int, help='Compound CID', action='appe
                     400: 'File bigger than 10 Mb'})
 @api.expect(pubchem_parser)
 class PubchemCID(Resource):
-    # decorators = [limiter.shared_limit("100/hour", scope="upload")]
     def post(self) -> Union[Tuple[Dict[str, Union[str, int]], int], Dict[str, Any]]:
         """Specify Pubchem CID of your structure."""
         cid_identifiers = request.args.getlist('cid[]')
@@ -411,6 +415,7 @@ class PubchemCID(Resource):
 
 
 def release_space(file_size: float, user: str) -> None:
+    """Release space on disk for specific user"""
     if limitations_on:
         if used_space[user] - file_size <= 0:
             del used_space[user]
@@ -424,7 +429,8 @@ remove_file_parser.add_argument('structure_id',
                                 help='Obtained structure identifier of your structure',
                                 required=True)
 @api.doc(responses={404: 'Structure ID not specified',
-                    400: 'Structure ID does not exist / Structure not in correct format',
+                    400: 'Structure ID does not exist',
+                    403: 'Not allowed to remove the structure',
                     200: 'OK'})
 @api.expect(remove_file_parser)
 @remove_file.route('')
@@ -446,7 +452,9 @@ class RemoveFile(Resource):
             return response.json
 
         if structure_id not in user_id_manager[request.remote_addr]:
-            response = ErrorResponse(message=f'It is not allowed to remove {structure_id}.', request=request)
+            response = ErrorResponse(message=f'It is not allowed to remove {structure_id}.',
+                                     status_code=403,
+                                     request=request)
             response.log(simple_logger)
             return response.json
 
@@ -474,6 +482,7 @@ def convert_pqr_to_pdb(pqr_file: os.PathLike, pdb_file: os.PathLike) -> None:
 
 
 def run_pqr(noopt: bool, ph: str, input_file: os.PathLike, path_to_pqr: os.PathLike) -> bool:
+    """Add hydrogens using pdb2pqr"""
     successfull = True
     try:
         if noopt:
@@ -509,8 +518,7 @@ hydro_parser.add_argument('noopt',
 @api.expect(hydro_parser)
 class AddHydrogens(Resource):
     def post(self) -> Union[Tuple[Dict[str, Union[str, int]], int], Dict[str, Union[str, int]]]:
-        """WIP: Might not work as expected - works just for structures in .pdb format!
-        Add hydrogens to your structure represented by an structure identifier"""
+        """Add hydrogens to your structure represented by an structure identifier"""
         structure_id = request.args.get('structure_id')
         if not structure_id:
             response = ErrorResponse(message=f'Structure ID not specified', request=request)
@@ -561,6 +569,7 @@ class AddHydrogens(Resource):
 
 
 def create_zip_file(folder: pathlib.Path) -> BytesIO:
+    """Returns zip file"""
     stream = BytesIO()
     with ZipFile(stream, 'w') as zf:
         for file in folder.glob('*'):
@@ -577,9 +586,10 @@ file_parser.add_argument('structure_id',
                          required=True)
 @get_structure_file.route('')
 @api.doc(responses={404: 'Structure ID not specified',
-                    400: 'Structure ID does not exist / Structure not in correct format'})
+                    400: 'Structure ID does not exist'})
 @api.expect(file_parser)
 class StructureFile(Resource):
+    """Allows to download the structure specified by structure ID"""
     def get(self):
         structure_id = request.args.get('structure_id')
         if not structure_id:
@@ -717,6 +727,7 @@ class SuitableMethods(Resource):
 
 @calculate_time
 def round_charges(charges: Dict[str, Union[str, List[str]]]) -> List[Dict[str, Union[str, List[str]]]]:
+    """Rounds calculated charges"""
     rounded_charges = []
     for key in charges.keys():
         tmp = {}
@@ -726,6 +737,7 @@ def round_charges(charges: Dict[str, Union[str, List[str]]]) -> List[Dict[str, U
 
 
 def calculate_charges(molecules: chargefw2_python.Molecules, method: str, parameters: str) -> CalculationResult:
+    """Function calculates charges"""
     calc_start = time.perf_counter()
     charges = chargefw2_python.calculate_charges(molecules, method, parameters)
     calc_end = time.perf_counter()
@@ -768,6 +780,7 @@ calc_parser.add_argument('ignore_water',
 class CalculateCharges(Resource):
     @calculate_time
     def get(self) -> Union[Tuple[Dict[str, Union[str, int]], int], Dict[str, Any]]:
+        """Calculates partial atomic charges"""
         structure_id = request.args.get('structure_id')
         method = request.args.get('method')
         parameters = request.args.get('parameters')
@@ -812,7 +825,6 @@ class CalculateCharges(Resource):
             response.log(simple_logger)
             return response.json
 
-        # try:
         if config['limits']['on'] == 'True':
             if request.remote_addr in long_calculations and \
                     long_calculations[request.remote_addr] >= int(config['limits']['max_long_calc']):
@@ -873,6 +885,7 @@ class Limits:
         return '\n'.join(files_info)
 
     def get_limits(self) -> Dict[str, Any]:
+        """Returns info about current limits for the specific user"""
         if config['limits']['on'] == 'True':
             file_size = int(config['limits']['file_size'])
             max_long_calc = int(config['limits']['max_long_calc'])
@@ -901,6 +914,7 @@ class Limits:
 @get_limits.route('')
 class GetLimitsEndpoint(Resource):
     def get(self) -> Dict[str, Any]:
+        """Returns current limits for the user"""
         limits = Limits(request.remote_addr)
         return limits.get_limits()
 
@@ -911,6 +925,7 @@ def add_long_calc(long_calc: Dict[Any, Any], user_add: str) -> None:
 
 
 def increase_limit() -> None:
+    """Increase number of long calculation"""
     to_delete = []
     for user in long_calculations:
         if long_calculations[user] > 1:
