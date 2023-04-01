@@ -1,4 +1,4 @@
-#! /bin/bash
+#!/bin/bash
 sudo apt-get update
 sudo apt-get -y upgrade
 
@@ -38,16 +38,14 @@ sudo pip install pdb2pqr
 # flask-restx installation
 sudo pip install flask-restx
 
-# openbabel installation
-sudo apt-get install -y openbabel
-
-# dos2unix installation
-sudo apt-get install -y dos2unix
+# dos2unix, openbabel installation
+sudo apt-get install -y dos2unix openbabel
 
 # API
-sudo mkdir /home/api_acc2/api_acc2/logs
+sudo mkdir /home/api_acc2/api_acc2
 sudo git clone https://github.com/LenkaPt/AtomicChargeCalculatorAPI.git /home/api_acc2/api_acc2
 sudo mkdir /home/tmp
+sudo mkdir /home/api_acc2/api_acc2/logs
 sudo chown -R api_acc2:api_acc2 /home/api_acc2
 sudo chown -R api_acc2:api_acc2 /home/tmp
 
