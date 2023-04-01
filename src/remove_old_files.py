@@ -7,6 +7,7 @@ from datetime import date
 
 
 def delete_id_from_user(identifier: str, user_id_manager: Dict[str, str]) -> None:
+    """Dletes specific ID from list of users IDs"""
     for user in user_id_manager:
         if identifier in user_id_manager[user]:
             user_id_manager[user].remove(identifier)
@@ -17,6 +18,7 @@ def delete_id_from_user(identifier: str, user_id_manager: Dict[str, str]) -> Non
 
 def delete_old_records(file_manager: Dict[str, Union[str, os.PathLike]], user_id_manager: Dict[str, str],
                        config_older_than: float, log_file: Union[str, os.PathLike]) -> None:
+    """Deletes files older than configured"""
     identifiers = file_manager.keys()
     for identifier in identifiers:
         path_to_id = pathlib.Path(file_manager[identifier])

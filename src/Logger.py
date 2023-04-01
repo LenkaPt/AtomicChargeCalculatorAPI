@@ -6,6 +6,7 @@ from typing import Union
 
 
 def logging_process(queue: Queue, error_file: Union[os.PathLike, str], stat_file: Union[os.PathLike, str]) -> None:
+    """Process of logging using queue"""
     error_logger = Logger('error', file=error_file, level=logging.ERROR)
     stat_logger = Logger('statistics', file=stat_file, level=logging.INFO)
     for message in iter(queue.get, None):
@@ -19,6 +20,7 @@ class LevelFilter(logging.Filter):
         self.__level = level
 
     def filter(self, logRecord: logging.LogRecord) -> bool:
+        """Filtres record based on level"""
         return logRecord.levelno == self.__level
 
 
@@ -34,6 +36,7 @@ class Logger:
             raise ValueError('Wrong type of logger')
 
     def setup_logger(self, name: str, log_file: os.PathLike, level: int) -> logging.Logger:
+        """Setups logger"""
         formatter = logging.Formatter(f'%(asctime)s'
                                       f'%(process)d, '
                                       f'%(message)s')
@@ -48,12 +51,15 @@ class Logger:
         return logger
 
     def get_error_logger(self, file: os.PathLike, level: int = logging.ERROR) -> logging.Logger:
+        """Returns logger for error messages"""
         return self.setup_logger('error_logger', file, level)
 
     def get_statistics_logger(self, file: os.PathLike, level=logging.INFO) -> logging.Logger:
+        """Returns logger for statistics messages"""
         return self.setup_logger('collect_statistics_logger', file, level)
 
     def get_simple_logger(self, queue: Queue) -> logging.Logger:
+        """Returns basic simple logger with QueueHandler"""
         logger = logging.getLogger('api')
         # add a handler that uses the shared queue
         logger.addHandler(QueueHandler(queue))
@@ -61,6 +67,7 @@ class Logger:
         return logger
 
     def log_statistics_message(self, remote_add: str, endpoint_name: str, **kwargs) -> None:
+        """Logs statistics messages"""
         result_message = []
         result_message.append(f'{remote_add}')
         result_message.append(f'endpoint_name={endpoint_name}')
@@ -71,6 +78,7 @@ class Logger:
         self._logger.info(message)
 
     def log_error_message(self, remote_add: str, endpoint_name: str, error_message: str, **kwargs) -> None:
+        """Logs error messages"""
         result_message = []
         result_message.append(f'{remote_add}')
         result_message.append(f'endpoint_name={endpoint_name}')
@@ -82,4 +90,5 @@ class Logger:
         self._logger.error(message)
 
     def handle(self, message):
+        """Handles message"""
         self._logger.handle(message)

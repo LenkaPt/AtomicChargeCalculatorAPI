@@ -13,14 +13,17 @@ class Structure:
         self._file_manager = file_manager
 
     def set_file_manager(self, file_manager: Dict[str, os.PathLike]) -> None:
+        """Sets file manager of structure"""
         self._file_manager = file_manager
 
     def get_structure_file(self) -> Union[None, str, os.PathLike]:
+        """Returns file with structure"""
         if self._structure_id in self._file_manager:
             return self._file_manager[self._structure_id]
         return None
 
     def get_molecules(self, read_hetatm: bool = True, ignore_water: bool = False) -> chargefw2_python.Molecules:
+        """Returns molecules of the structure"""
         path_to_file = self.get_structure_file()
         if path_to_file is None:
             raise ValueError(f'Structure ID {self._structure_id} does not exist.')
@@ -30,12 +33,14 @@ class Structure:
             raise ValueError(e)
 
     def get_parameters_without_suffix(self, params: List[str]) -> List[str]:
+        """Returns parameters of method without suffixes"""
         new_params = []
         for par in params:
             new_params.append(pathlib.Path(par).stem)
         return new_params
 
     def format_methods(self, methods: List[Dict[str, List[str]]]) -> List[Dict[str, List[str]]]:
+        """Modifies methods to different format"""
         result_format = []
         for item in methods:
             params = item[1]
@@ -53,6 +58,7 @@ class Structure:
 
     def is_method_suitable(self, method: str, suitable_methods: List[Dict[str, List[str]]] = None,
                            read_hetatm: bool = True, ignore_water: bool = False) -> bool:
+        """Returns wheter method is suitable for the structure"""
         if not suitable_methods:
             suitable_methods = self.get_suitable_methods(read_hetatm, ignore_water)
         for item in suitable_methods:
@@ -82,9 +88,11 @@ class Method:
         self._method = method
 
     def is_method_available(self) -> bool:
+        """Returns wheter method is available or not"""
         return self._method in chargefw2_python.get_available_methods()
 
     def get_available_parameters(self) -> List[str]:
+        """Returns available parameters for the method"""
         if not self.is_method_available():
             raise ValueError(f'Method {self._method} is not available.')
         return chargefw2_python.get_available_parameters(self._method)
@@ -99,15 +107,19 @@ class CalculationResult:
 
     @property
     def calc_time(self) -> float:
+        """Time of calculation"""
         return self._calc_time
 
     def get_charges(self) -> List[Dict[str, Union[str, List[str]]]]:
+        """Returns calculated partial atomic charges"""
         return self._charges
 
     @property
     def method(self) -> str:
+        """Method of calculation"""
         return self._method
 
     @property
     def parameters(self) -> str:
+        """Parameters used during calculation"""
         return self._parameters

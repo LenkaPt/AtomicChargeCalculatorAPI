@@ -12,6 +12,7 @@ class Response(ABC):
 
     @abstractmethod
     def json(self):
+        """Retruns message in json format"""
         pass
 
 
@@ -28,6 +29,7 @@ class OKResponse(Response):
                         **self._data})
 
     def log(self, logger: Logger, **kwargs) -> None:
+        """Logs statistics messages"""
         args = kwargs
         if self._request.args.get('method'):
             args['method'] = self._request.args.get('method')
@@ -61,5 +63,6 @@ class ErrorResponse(Response):
                 'message': self._message}, self._status_code
 
     def log(self, logger: Logger) -> None:
+        """Logs error messages"""
         logger.log_error_message(self._request.remote_addr, endpoint_name=self._request.path,
                                  error_message=self._message, status_code=self._status_code)
