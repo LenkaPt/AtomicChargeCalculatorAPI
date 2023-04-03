@@ -1,12 +1,12 @@
 import os
 from threading import Timer
-from typing import Dict, Union
+from typing import Dict, Union, List
 import pathlib
 import time
 from datetime import date
 
 
-def delete_id_from_user(identifier: str, user_id_manager: Dict[str, Union[str, pathlib.Path]]) -> None:
+def delete_id_from_user(identifier: str, user_id_manager: Dict[str, List[str]]) -> None:
     for user in user_id_manager:
         if identifier in user_id_manager[user]:
             user_id_manager[user].remove(identifier)
@@ -15,7 +15,7 @@ def delete_id_from_user(identifier: str, user_id_manager: Dict[str, Union[str, p
             break
 
 
-def delete_old_records(file_manager: Dict[str, Union[str, os.PathLike]], user_id_manager: Dict[str, str],
+def delete_old_records(file_manager: Dict[str, Union[str, os.PathLike]], user_id_manager: Dict[str, List[str]],
                        config_older_than: float, log_file: Union[str, os.PathLike]) -> None:
     identifiers = file_manager.keys()
     for identifier in identifiers:
