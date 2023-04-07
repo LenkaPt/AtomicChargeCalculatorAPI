@@ -726,13 +726,11 @@ class SuitableMethods(Resource):
 
 
 @calculate_time
-def round_charges(charges: Dict[str, Union[str, List[str]]]) -> List[Dict[str, Union[str, List[str]]]]:
+def round_charges(charges: Dict[str, Union[str, List[str]]]) -> Dict[str, Union[str, List[str]]]:
     """Rounds calculated charges"""
-    rounded_charges = []
+    rounded_charges = {}
     for key in charges.keys():
-        tmp = {}
-        tmp[key] = list(map(lambda x: round(x, 4), charges[key]))
-        rounded_charges.append(tmp)
+        rounded_charges[key] = list(map(lambda x: round(x, 4), charges[key]))
     return rounded_charges
 
 
