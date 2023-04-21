@@ -199,6 +199,7 @@ file_parser.add_argument('file[]', location='files', type=FileStorage, required=
 @api.doc(responses={404: 'No file sent',
                     400: 'Unsupported format',
                     413: 'File is too large',
+                    429: 'The grounded disk space was exceeded',
                     200: 'OK'})
 @api.expect(file_parser)
 class SendFilesEndpoint(Resource):
@@ -244,7 +245,7 @@ class SendFilesEndpoint(Resource):
         # some ids were uploaded, but not all because the limited disk space
         elif not all_uploaded and user_response:
             return jsonify({'message': 'You have exceeded the grounded disk space',
-                            'status_code': 413,
+                            'status_code': 429,
                             'successfully_uploaded_structure_ids': user_response})
         else:
             response = ErrorResponse(message='Grounted disk space exceeded', status_code=413, request=request)
@@ -278,7 +279,8 @@ pid_parser.add_argument('pid[]', type=str, help='PDB ID', action='append', requi
 @pid.route('')
 @api.doc(responses={404: 'No PDB iD specified or PDB ID does not exist',
                     200: 'OK',
-                    400: 'File bigger than 10 Mb'})
+                    413: 'File bigger than 10 Mb',
+                    429: 'The grounded disk space was exceeded'})
 @api.expect(pid_parser)
 class PdbID(Resource):
     def post(self) -> Union[Tuple[Dict[str, Union[str, int]], int], Dict[str, Any]]:
@@ -309,7 +311,7 @@ class PdbID(Resource):
             successfully_written_file = file.write_file(request_response['response'], config)
             if not successfully_written_file:
                 response = ErrorResponse(message=f'Not possible to upload {pdb_id}. It is bigger than 10 Mb.',
-                                         status_code=400,
+                                         status_code=413,
                                          request=request)
                 response.log(simple_logger)
                 return response.json
@@ -331,7 +333,7 @@ class PdbID(Resource):
         # some ids were uploaded, but not all because the limited disk space
         elif not all_uploaded and user_response:
             return jsonify({'message': 'You have exceeded the grounded disk space',
-                            'status_code': 413,
+                            'status_code': 429,
                             'successfully_uploaded_structure_ids': user_response})
         else:
             response = ErrorResponse(message='Grounted disk space exceeded', status_code=413, request=request)
@@ -353,7 +355,8 @@ pubchem_parser.add_argument('cid[]', type=int, help='Compound CID', action='appe
 @cid.route('')
 @api.doc(responses={404: 'No Pubchem compound ID specified or compound ID does not exist',
                     200: 'OK',
-                    400: 'File bigger than 10 Mb'})
+                    413: 'File bigger than 10 Mb',
+                    429: 'The grounded disk space was exceeded'})
 @api.expect(pubchem_parser)
 class PubchemCID(Resource):
     def post(self) -> Union[Tuple[Dict[str, Union[str, int]], int], Dict[str, Any]]:
@@ -384,7 +387,7 @@ class PubchemCID(Resource):
             successfully_written_file = file.write_file(request_response['response'], config)
             if not successfully_written_file:
                 response = ErrorResponse(message=f'Not possible to upload {cid}. It is bigger than 10 Mb.',
-                                         status_code=400,
+                                         status_code=413,
                                          request=request)
                 response.log(simple_logger)
                 return response.json
@@ -406,7 +409,7 @@ class PubchemCID(Resource):
         # some ids were uploaded, but not all because the limited disk space
         elif not all_uploaded and user_response:
             return jsonify({'message': 'You have exceeded the grounded disk space',
-                            'status_code': 413,
+                            'status_code': 429,
                             'successfully_uploaded_structure_ids': user_response})
         else:
             response = ErrorResponse(message='Grounted disk space exceeded', status_code=413, request=request)
@@ -766,6 +769,11 @@ calc_parser.add_argument('ignore_water',
                          help='Use in case that you would like to ignore '
                               'water molecules.\n'
                               'Default: False')
+calc_parser.add_argument('generate_mol2',
+                         type=bool,
+                         help='Use in case that you want to generate charges '
+                              'into mol2 format instead of returning list of charges.\n'
+                              'Default: False')
 @calc_charges.route('')
 @api.doc(responses={404: 'Structure ID not specified',
                     400: 'Structure ID does not exist/'
@@ -785,6 +793,7 @@ class CalculateCharges(Resource):
 
         read_hetatm = request.args.get('read_hetatm')
         ignore_water = request.args.get('ignore_water')
+
 
         read_hetatm = get_bool_value(read_hetatm)  # default: True
         ignore_water = get_bool_value(ignore_water)  # default False
