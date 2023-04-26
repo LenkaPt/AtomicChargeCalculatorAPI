@@ -45,15 +45,20 @@ def test_get_limits(url):
     assert response['Max file size'] is not None
 
 
-# def test_limited_long_calculations(url, max_long_calc):
-# TODO najit nejakou strukturu, co ma napr 9 Mb - nahraje se, ale bude trvat dlouho
+def test_limited_long_calculations(url, max_long_calc):
+    identifier = pdb_id('2bg9', url).json()['structure_ids']['2bg9']
+    response_calc_charges = calculate_charges(identifier, None, None, url)
+    assert response_calc_charges.json()['message'] == 'OK'
+    for i in range(int(max_long_calc) + 1):
+        response_calc_charges = calculate_charges(identifier, None, None, url)
+    assert 'time demanding calculations' in response_calc_charges.json()['message']
 
 
 def test_limited_granted_space(url, granted_space, valid_file):
     response_send_file = send_file(valid_file, url).json()['message']
     file_size = Path(valid_file).stat().st_size
     crowded_space = file_size
-    while granted_space >= crowded_space:
+    while float(granted_space) >= crowded_space:
         response_send_file = send_file(valid_file, url).json()['message']
         crowded_space += file_size
     # user exceeded his grounted space
