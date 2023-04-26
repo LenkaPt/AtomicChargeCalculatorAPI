@@ -793,10 +793,12 @@ class CalculateCharges(Resource):
 
         read_hetatm = request.args.get('read_hetatm')
         ignore_water = request.args.get('ignore_water')
+        generate_mol2 = request.args.get('generate_mol2')
 
 
         read_hetatm = get_bool_value(read_hetatm)  # default: True
         ignore_water = get_bool_value(ignore_water)  # default False
+        generate_mol2 = get_bool_value(generate_mol2)  # default False
 
         if not structure_id:
             response = ErrorResponse(message=f'Structure ID not specified', request=request)
@@ -872,6 +874,13 @@ class CalculateCharges(Resource):
                          suffix=suffix,
                          number_of_molecules=molecules_count,
                          number_of_atoms=atom_count)
+
+        if generate_mol2:
+            tmpdir = generate_tmp_directory()
+            path = tmpdir + structure_id + '.mol2'
+            chargefw2_python.save_mol2(molecules, result.get_charges(), path)
+            return send_file(path, as_attachment=True)
+
         return response.json
 
 
