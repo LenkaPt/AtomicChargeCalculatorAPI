@@ -12,7 +12,6 @@ def logging_process(queue: Queue, error_file: Union[os.PathLike, str], stat_file
     for message in iter(queue.get, None):
         error_logger.handle(message)
         stat_logger.handle(message)
-        print(f'Logger queue: {queue.qsize()}')
 
 
 class LevelFilter(logging.Filter):
