@@ -26,12 +26,12 @@ def pdb_id(identifier, url):
 
 
 @pytest.mark.parametrize('structure_id, expected', [
-    ('1ner', 'OK'),
-    ('4wfb', 'bigger than 10 Mb'),
     ('hgkcgyargy', 'Not Found for url'),
     (None, 'No pdb id specified')
 ])
-def test_pdb_id(structure_id, expected, url):
+def test_pdb_id(structure_id, expected, url, valid_pdb_id, big_molecule_pdb_id):
+    assert 'OK' in pdb_id(valid_pdb_id, url).json()['message']
+    assert 'bigger than 10 Mb' in pdb_id(big_molecule_pdb_id, url).json()['message']
     response = pdb_id(structure_id, url).json()
     assert expected in response['message']
 
@@ -45,8 +45,8 @@ def test_get_limits(url):
     assert response['Max file size'] is not None
 
 
-def test_limited_long_calculations(url, max_long_calc):
-    identifier = pdb_id('2bg9', url).json()['structure_ids']['2bg9']
+def test_limited_long_calculations(url, max_long_calc, pdb_id_for_long_calculation):
+    identifier = pdb_id(pdb_id_for_long_calculation, url).json()['structure_ids']['2bg9']
     response_calc_charges = calculate_charges(identifier, None, None, url)
     assert response_calc_charges.json()['message'] == 'OK'
     for i in range(int(max_long_calc) + 1):

@@ -30,12 +30,12 @@ def pdb_id(identifier, url):
 
 
 @pytest.mark.parametrize('structure_id, expected', [
-    ('1ner', 'OK'),
-    ('4wfb', 'OK'),
     ('hgkcgyargy', 'Not Found for url'),
     (None, 'No pdb id specified')
 ])
-def test_pdb_id(structure_id, expected, url):
+def test_pdb_id(structure_id, expected, url, valid_pdb_id, big_molecule_pdb_id):
+    assert 'OK' in pdb_id(valid_pdb_id, url).json()['message']
+    assert 'OK' in pdb_id(big_molecule_pdb_id, url).json()['message']
     response = pdb_id(structure_id, url).json()
     assert expected in response['message']
 

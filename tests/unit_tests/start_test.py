@@ -11,7 +11,10 @@ default_valid_file = config['files']['valid_file']
 default_invalid_file = config['files']['invalid_file']
 default_file_in_invalid_format = config['files']['file_in_invalid_format']
 default_big_file = config['files']['big_file']
-default_url = config['urls']['dev_url']
+default_valid_pdb_id = config['ids']['valid_pdb_id']
+default_big_molecule_pdb_id = config['ids']['big_molecule_pdb_id']
+default_pdb_id_for_long_calculation = config['ids']['pdb_id_for_long_calculation']
+default_url = config['urls']['url']
 default_cid = config['ids']['cid']
 default_limit_file = config['limit_file']['default']
 
@@ -27,6 +30,14 @@ parser.add_argument('--cid', help='ID of structure in Pubchem database', default
 parser.add_argument('--file_in_invalid_format', help='File in not supported format',
                     default=default_file_in_invalid_format)
 parser.add_argument('--big_file', help='File larger than 10 Mb', default=default_big_file)
+parser.add_argument('--valid_pdb_id', help='Existing PDB ID of molecule that can be upload to API',
+                    default=default_valid_pdb_id)
+parser.add_argument('--big_molecule_pdb_id',
+                    help='Existing PDB ID of molecule that is larger than limit for uploading files to API',
+                    default=default_big_molecule_pdb_id)
+parser.add_argument('--pdb_id_for_long_calculation',
+                    help='Existing PDB ID of molecule that can be upload to API but its calculation should be consider as long',
+                    default=default_pdb_id_for_long_calculation)
 parser.add_argument('--max_long_calc', help='How many long calculations is allowed to user',
                     default=default_max_long_calc)
 parser.add_argument('--granted_space', help='Space granted for user', default=default_granted_space)
@@ -38,6 +49,9 @@ invalid_file = args.invalid_file
 cid = args.cid
 file_in_invalid_format = args.file_in_invalid_format
 big_file = args.big_file
+valid_pdb_id = args.valid_pdb_id
+big_molecule_pdb_id = args.big_molecule_pdb_id
+pdb_id_for_long_calculation = args.pdb_id_for_long_calculation
 max_long_calc = args.max_long_calc
 granted_space = args.granted_space
 
@@ -55,4 +69,7 @@ subprocess.run(['pytest', '--url', url,
                 '--big_file', default_big_file,
                 '--max_long_calc', max_long_calc,
                 '--granted_space', granted_space,
-                'test.py', 'limits_of.py'])
+                '--valid_pdb_id', valid_pdb_id,
+                '--big_molecule_pdb_id', big_molecule_pdb_id,
+                '--pdb_id_for_long_calculation', pdb_id_for_long_calculation,
+                'limits_of.py'])

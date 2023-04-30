@@ -24,6 +24,17 @@ def pytest_addoption(parser):
         '--big_file', action='store', help='File larger than 10 Mb'
     )
     parser.addoption(
+        '--valid_pdb_id', action='store', help='Existing PDB ID of molecule that can be upload to API'
+    )
+    parser.addoption(
+        '--big_molecule_pdb_id', action='store',
+        help='Existing PDB ID of molecule that is larger than limit for uploading files to API'
+    )
+    parser.addoption(
+        '--pdb_id_for_long_calculation', action='store',
+        help='Existing PDB ID of molecule that can be upload to API but its calculation should be consider as long'
+    )
+    parser.addoption(
         '--max_long_calc', action='store', help='How many long calculations is allowed to user'
     )
     parser.addoption(
@@ -71,6 +82,24 @@ def invalid_format(request):
 def big_file(request):
     big_file = request.config.getoption('--big_file')
     return big_file
+
+
+@pytest.fixture(scope='module')
+def valid_pdb_id(request):
+    valid_pdb_id = request.config.getoption('--valid_pdb_id')
+    return valid_pdb_id
+
+
+@pytest.fixture(scope='module')
+def big_molecule_pdb_id(request):
+    big_molecule_pdb_id = request.config.getoption('--big_molecule_pdb_id')
+    return big_molecule_pdb_id
+
+
+@pytest.fixture(scope='module')
+def pdb_id_for_long_calculation(request):
+    pdb_id_for_long_calculation = request.config.getoption('--pdb_id_for_long_calculation')
+    return pdb_id_for_long_calculation
 
 
 @pytest.fixture(scope='module')
