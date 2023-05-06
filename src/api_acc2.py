@@ -854,7 +854,7 @@ class CalculateCharges(Resource):
             if result.calc_time > float(config['limits']['calc_time']):
                 add_long_calc(long_calculations, request.remote_addr)
 
-        suffix = structure.get_structure_file()[-3:]
+        suffix = pathlib.Path(structure.get_structure_file()).suffix
         molecules_count, atom_count, atoms_list_count = chargefw2_python.get_info(molecules)
 
         response = OKResponse(data={'charges': result.get_charges(), 'method': result.method,
