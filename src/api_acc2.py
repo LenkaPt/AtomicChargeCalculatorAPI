@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, send_file, jsonify
+from flask import Flask, render_template, request, send_file, jsonify, send_from_directory
 from flask_restx import Api, Resource, reqparse
 from werkzeug.datastructures import FileStorage
 from typing import Dict, Any, Union, List, Tuple, Callable
@@ -23,7 +23,7 @@ from File import File
 from remove_old_files import RepeatTimer, delete_id_from_user, delete_old_records
 
 config = configparser.ConfigParser()
-config.read('/home/api_acc2/api_acc2/utils/api.ini')
+config.read(os.getcwd() + '/utils/api.ini')
 app = Flask(__name__)
 if config['limits']['on'] == 'True':
     app.config['MAX_CONTENT_LENGTH'] = int(config['limits']['file_size'])
@@ -38,7 +38,8 @@ api = Api(app,
 @app.route('/documentation')
 def documentation():
     """Documentation"""
-    return send_from_directory('.', 'Documentation.pdf')
+    path = os.getcwd() + '/doc'
+    return send_from_directory(path, 'Documentation.pdf')
 
 
 # namespace for sending files - for documentation
@@ -844,25 +845,25 @@ class CalculateCharges(Resource):
                 return response.json
 
         try:
-            result = calculate_charges(molecules, method, parameters)
+            result_of_calculation = calculate_charges(molecules, method, parameters)
         except RuntimeError as e:
             response = ErrorResponse(str(e), request=request)
             response.log(simple_logger)
             return response.json
 
         if config['limits']['on'] == 'True':
-            if result.calc_time > float(config['limits']['calc_time']):
+            if result_of_calculation.calc_time > float(config['limits']['calc_time']):
                 add_long_calc(long_calculations, request.remote_addr)
 
         suffix = pathlib.Path(structure.get_structure_file()).suffix
         molecules_count, atom_count, atoms_list_count = chargefw2_python.get_info(molecules)
 
-        response = OKResponse(data={'charges': result.get_charges(), 'method': result.method,
-                                    'parameters': result.parameters},
+        response = OKResponse(data={'charges': result_of_calculation.get_charges(), 'method': result_of_calculation.method,
+                                    'parameters': result_of_calculation.parameters},
                               request=request)
         if not request.args.get('method'):
             response.log(simple_logger,
-                         time=result.calc_time,
+                         time=result_of_calculation.calc_time,
                          suffix=suffix,
                          number_of_molecules=molecules_count,
                          number_of_atoms=atom_count,
@@ -870,16 +871,16 @@ class CalculateCharges(Resource):
                          parameters=parameters)
         else:
             response.log(simple_logger,
-                         time=result.calc_time,
+                         time=result_of_calculation.calc_time,
                          suffix=suffix,
                          number_of_molecules=molecules_count,
                          number_of_atoms=atom_count)
 
         if generate_mol2:
             tmpdir = generate_tmp_directory()
-            path = tmpdir + structure_id + '.mol2'
-            chargefw2_python.save_mol2(molecules, result.get_charges(), path)
-            return send_file(path, as_attachment=True)
+            mol2_file = tmpdir + structure_id + '.mol2'
+            chargefw2_python.save_mol2(molecules, result_of_calculation.get_charges(), mol2_file)
+            return send_file(mol2_file, as_attachment=True)
 
         return response.json
 
