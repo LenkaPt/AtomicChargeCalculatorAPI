@@ -32,7 +32,7 @@ api = Api(app,
           description='Atomic Charge Calculator II is software tool '
                       'designated for calculation of partial atomic charges.\n'
                       '<br>'
-                      '<a href="http://78.128.250.156/documentation">Documentation</a>')
+                      '<a href="/documentation">Documentation</a>')
 
 
 @app.route('/documentation')
