@@ -1,5 +1,6 @@
 import requests
 import pytest
+from pathlib import Path
 
 
 def send_file(file, url):
@@ -47,3 +48,14 @@ def get_limits(url):
 def test_get_limits(url):
     response = get_limits(url).json()
     assert 'No restrictions turned on' in response['message']
+
+
+def test_space_not_limited(url, granted_space, valid_file):
+    response_send_file = send_file(valid_file, url).json()['message']
+    file_size = Path(valid_file).stat().st_size
+    crowded_space = file_size
+    while float(granted_space) >= crowded_space:
+        response_send_file = send_file(valid_file, url).json()['message']
+        crowded_space += file_size
+    # user is not limited by space
+    assert response_send_file == 'OK'
