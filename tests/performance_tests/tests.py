@@ -6,54 +6,57 @@ import test_sequentially
 
 def get_calc_time(count, func, *args):
     calc_time = 0
+    times = []  # # individual times of calculation - use for standard deviation
     for _ in range(count):
-            calc_time += func(*args)['calculation']
-    return round(calc_time/count, 2)
+        func_time = func(*args)['calculation']
+        times.append(func_time)
+        calc_time += func_time
+    return round(calc_time/count, 2), times
 
 
 def all_in_one(count, file, ip, method, parameters, parameters_file, chg_out_dir):
-    api = get_calc_time(count, test_one_file.api, file, ip, method, parameters)
-    pybind = get_calc_time(count, test_one_file.pybind, file, method, parameters)
-    chargefw2 = get_calc_time(count, test_one_file.chargefw2, file, method, parameters_file, chg_out_dir)
-    return api, pybind, chargefw2
+    api, api_times = get_calc_time(count, test_one_file.api, file, ip, method, parameters)
+    pybind, pybind_times = get_calc_time(count, test_one_file.pybind, file, method, parameters)
+    chargefw2, chargefw2_times = get_calc_time(count, test_one_file.chargefw2, file, method, parameters_file, chg_out_dir)
+    return api, pybind, chargefw2, api_times, pybind_times, chargefw2_times
 
 
-def results_summary_all_in_one(api, pybind, chargefw2):
+def results_summary_all_in_one(api, pybind, chargefw2, api_times, pybind_times, chargefw2_times):
     return f'All molecules in one file:\n' \
-           f'Calculation via API: {api}\n' \
-           f'Calculation via pybind: {pybind}\n' \
-           f'Calculation via chargefw2: {chargefw2}\n\n'
+           f'Calculation via API: {api} - {api_times}\n' \
+           f'Calculation via pybind: {pybind} - {pybind_times}\n' \
+           f'Calculation via chargefw2: {chargefw2} - {chargefw2_times}\n\n'
 
 
 def sequentially(count, folder, ip, method, parameters, path_to_parameters, chg_out_dir):
-    api = get_calc_time(count, test_sequentially.api, folder, ip, method, parameters)
-    pybind = get_calc_time(count, test_sequentially.pybind, folder, method, parameters)
-    chargefw2 = get_calc_time(count, test_sequentially.chargefw2, folder, method, path_to_parameters, chg_out_dir)
-    return api, pybind, chargefw2
+    api, api_times = get_calc_time(count, test_sequentially.api, folder, ip, method, parameters)
+    pybind, pybind_times = get_calc_time(count, test_sequentially.pybind, folder, method, parameters)
+    chargefw2, chargefw2_times = get_calc_time(count, test_sequentially.chargefw2, folder, method, path_to_parameters, chg_out_dir)
+    return api, pybind, chargefw2, api_times, pybind_times, chargefw2_times
 
 
-def results_summary_sequentially(api, pybind, chargefw2):
+def results_summary_sequentially(api, pybind, chargefw2, api_times, pybind_times, chargefw2_times):
     return f'Molecules sequentially:\n' \
-           f'Calculation via API: {api}\n' \
-           f'Calculation via pybind: {pybind}\n' \
-           f'Calculation via chargefw2: {chargefw2}\n\n'
+           f'Calculation via API: {api} - {api_times}\n' \
+           f'Calculation via pybind: {pybind} - {pybind_times}\n' \
+           f'Calculation via chargefw2: {chargefw2} - {chargefw2_times}\n\n'
 
 
 def main(count, output_file, file, folder, ip, method, parameters, parameters_file, chg_out_dir):
     # All molecules in one file
-    api1, pybind1, chargefw21 = all_in_one(count, file, ip, method, parameters, parameters_file, chg_out_dir)
+    api1, pybind1, chargefw21, api1_times, pybind1_times, chargefw21_times = all_in_one(count, file, ip, method, parameters, parameters_file, chg_out_dir)
 
     # Molecules sequentially
-    api2, pybind2, chargefw22 = sequentially(count, folder, ip, method, parameters, parameters_file, chg_out_dir)
+    api2, pybind2, chargefw22, api2_times, pybind2_times, chargefw22_times = sequentially(count, folder, ip, method, parameters, parameters_file, chg_out_dir)
 
     with open(output_file, mode='a') as output:
         output.write(f'Count: {count}\n')
         output.write(f'{date.today().strftime("%d/%m/%Y")}, {time.strftime("%H:%M:%S", time.localtime())}\n')
 
-        output.write(results_summary_all_in_one(api1, pybind1, chargefw21))
+        output.write(results_summary_all_in_one(api1, pybind1, chargefw21, api1_times, pybind1_times, chargefw21_times))
         output.write('-------------------------------------------------------\n')
 
-        output.write(results_summary_sequentially(api2, pybind2, chargefw22))
+        output.write(results_summary_sequentially(api2, pybind2, chargefw22, api2_times, pybind2_times, chargefw22_times))
         output.write('||||||||||||||||||||||||||||||||||||||||||||||||||||||||||\n\n')
 
 
@@ -79,6 +82,3 @@ if __name__ == '__main__':
             output.write(f'{date.today().strftime("%d/%m/%Y")}, {time.strftime("%H:%M:%S", time.localtime())}\n')
             output.write(e)
         raise ValueError(e)
-
-
-

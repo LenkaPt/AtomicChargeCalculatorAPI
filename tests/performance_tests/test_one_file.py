@@ -41,12 +41,27 @@ def chargefw2(path_to_file, method, path_to_parameters, chg_out_dir):
 
 def main(count, file, ip, method, parameters, parameters_file, chg_out_dir):
     api_total = 0
+    api_individuals = []    # individual times of calculation - use for standard deviation
     pybind_total = 0
+    pybind_individuals = []
     chargefw2_total = 0
+    chargefw2_individuals = []
     for i in range(count):
-        api_total += api(file, ip, method, parameters)['calculation']
-        pybind_total += pybind(file, method, parameters)['calculation']
-        chargefw2_total += chargefw2(file, method, parameters_file, chg_out_dir)['calculation']
+        api_ = api(file, ip, method, parameters)['calculation']
+        api_individuals.append(api_)
+        api_total += api_
+
+        pybind_ = pybind(file, method, parameters)['calculation']
+        pybind_individuals.append(pybind_)
+        pybind_total += pybind_
+
+        chargefw2_ = chargefw2(file, method, parameters_file, chg_out_dir)['calculation']
+        chargefw2_individuals.append(chargefw2_)
+        chargefw2_total += chargefw2_
+
+    print(f'API individuals: {api_individuals}')
+    print(f'Pybind individuals: {pybind_individuals}')
+    print(f'ChargeFW2 individuals: {chargefw2_individuals}')
 
     return api_total/count, pybind_total/count, chargefw2_total/count
 
